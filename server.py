@@ -123,7 +123,6 @@ class DemoDashboard:
     def draw_dashboard(self, current_time, current_temp, load_val):
         plt.clear_figure()
         plt.plot(self.times, self.temps, marker="braille", color="red")
-        plt.hline(80, color="yellow")
         plt.title("Raspberry Pi Thermal Dynamic Demo & Dashboard")
         plt.ylim(40, 95)
         plt.plotsize(90, 16)

@@ -162,7 +162,8 @@ def update_loop(dashboard, load_shared, fan_device):
         temp = get_temp()
         dashboard.times.append(elapsed)
         dashboard.temps.append(temp)
-        if len(dashboard.times) > 150:
+        # Keep the last 5 minutes of samples (1500 @ 0.2s interval)
+        if len(dashboard.times) > 1500:
             dashboard.times.pop(0)
             dashboard.temps.pop(0)
         dashboard.update_demo_logic(elapsed, temp, load_shared, fan_device)

@@ -1,49 +1,48 @@
 #!/bin/bash
-# Checks GitHub for a new server.py every time it runs (called by cron).
-# If updated, replaces the local file and restarts the screen session.
+# Cache-proof updater: resolves the latest commit SHA via the GitHub API, then
+# downloads server.py pinned to that SHA (immutable URLs are never served stale).
+# Always restarts the screen session so you KNOW you're on the latest code.
 # Attach to the dashboard at any time with: screen -r thermal
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/server.py"
-REMOTE_URL="https://raw.githubusercontent.com/winsinor/temp/main/server.py"
+OWNER="winsinor"
+REPO="temp"
+BRANCH="main"
 SESSION="thermal"
 LOG="$SCRIPT_DIR/updater.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-# Fetch remote content (bail out silently on network error -- don't kill a running session)
-REMOTE_CONTENT=$(curl -fsSL --max-time 10 "$REMOTE_URL" 2>/dev/null)
-if [ -z "$REMOTE_CONTENT" ]; then
-    log "ERROR: Could not fetch remote script -- keeping current version"
+# 1. Resolve the latest commit SHA on the branch (API responses are not CDN-cached stale)
+SHA=$(curl -fsSL --max-time 10 \
+    "https://api.github.com/repos/$OWNER/$REPO/commits/$BRANCH" 2>/dev/null \
+    | grep -m1 '"sha"' | cut -d'"' -f4)
+
+if [ -z "$SHA" ]; then
+    log "ERROR: could not resolve latest SHA -- keeping current version"
+    echo "Could not reach GitHub. Keeping current version."
     exit 1
 fi
 
-REMOTE_HASH=$(echo "$REMOTE_CONTENT" | sha256sum | cut -d' ' -f1)
-LOCAL_HASH=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1)
-
-UPDATED=false
-if [ "$REMOTE_HASH" != "$LOCAL_HASH" ]; then
-    echo "$REMOTE_CONTENT" > "$SCRIPT_PATH"
-    log "Updated server.py ($LOCAL_HASH -> $REMOTE_HASH)"
-    UPDATED=true
+# 2. Download server.py pinned to that exact SHA (immutable, never stale)
+RAW_URL="https://raw.githubusercontent.com/$OWNER/$REPO/$SHA/server.py"
+if ! curl -fsSL --max-time 15 "$RAW_URL" -o "$SCRIPT_PATH.tmp"; then
+    log "ERROR: download failed for $SHA -- keeping current version"
+    echo "Download failed. Keeping current version."
+    exit 1
 fi
+mv "$SCRIPT_PATH.tmp" "$SCRIPT_PATH"
+log "Pulled server.py @ $SHA"
+echo "Pulled server.py @ ${SHA:0:7}"
 
-# Check if the screen session is alive
-SESSION_RUNNING=false
+# 3. Always restart the session so the new code is definitely running
 if screen -list 2>/dev/null | grep -q "\.${SESSION}[[:space:]]"; then
-    SESSION_RUNNING=true
-fi
-
-if [ "$SESSION_RUNNING" = true ] && [ "$UPDATED" = false ]; then
-    exit 0
-fi
-
-if [ "$SESSION_RUNNING" = true ]; then
-    log "Stopping existing session for restart"
     screen -S "$SESSION" -X quit
     sleep 2
+    log "Stopped existing session"
 fi
 
-log "Starting screen session '$SESSION'"
 screen -dmS "$SESSION" python3 "$SCRIPT_PATH"
-log "Session started (attach with: screen -r $SESSION)"
+log "Started session '$SESSION'"
+echo "Restarted dashboard (attach with: screen -r $SESSION)"

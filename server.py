@@ -124,10 +124,8 @@ class DemoDashboard:
         plt.clear_figure()
         plt.plot(self.times, self.temps, marker="braille", color="red")
         plt.hline(80, color="yellow")
-        for marker in self.markers:
-            plt.vline(marker, color="blue")
         plt.title("Raspberry Pi Thermal Dynamic Demo & Dashboard")
-        plt.ylim(50, 100)
+        plt.ylim(40, 95)
         plt.plotsize(90, 16)
         plt.theme("dark")
 

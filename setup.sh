@@ -1,18 +1,26 @@
 #!/bin/bash
-# One-time setup: install Python deps, register the cron job, start the dashboard.
-# Run once on the Pi: bash setup.sh
+# One-time setup: download all files, install Python deps, register cron, start dashboard.
+# Run once on the Pi:
+#   curl -sO https://raw.githubusercontent.com/winsinor/temp/main/setup.sh && bash setup.sh
 
+set -e
+
+BASE_URL="https://raw.githubusercontent.com/winsinor/temp/main"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPDATER="$SCRIPT_DIR/updater.sh"
 
 echo "=== Pi Thermal Dashboard Setup ==="
 
+# Download all required files
+echo "Downloading files..."
+curl -fsSL "$BASE_URL/server.py" -o "$SCRIPT_DIR/server.py"
+curl -fsSL "$BASE_URL/updater.sh" -o "$UPDATER"
+chmod +x "$UPDATER"
+echo "Done."
+
 # Install Python dependencies
 echo "Installing Python dependencies..."
-pip3 install --quiet plotext pyfiglet sshkeyboard
-
-# Make scripts executable
-chmod +x "$UPDATER"
+pip3 install --quiet --break-system-packages plotext pyfiglet sshkeyboard
 
 # Install cron job (once per minute) if not already present
 CRON_LINE="* * * * * $UPDATER >> $SCRIPT_DIR/updater.log 2>&1"

@@ -42,7 +42,7 @@ class DemoDashboard:
         self.current_std_dev = 0.0
         self.current_delta = 0.0
         self.is_steady = False
-        self.STEADY_THRESHOLD = 0.15
+        self.STEADY_THRESHOLD = 0.5
         self._seen_unsteady_in_step = False
 
     def reset_demo(self):

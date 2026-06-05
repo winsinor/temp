@@ -18,6 +18,12 @@ curl -fsSL "$BASE_URL/updater.sh" -o "$UPDATER"
 chmod +x "$UPDATER"
 echo "Done."
 
+# Install system dependency: screen (needed to run the TUI detached)
+echo "Installing screen..."
+if ! command -v screen >/dev/null 2>&1; then
+    sudo apt-get install -y screen
+fi
+
 # Install Python dependencies
 echo "Installing Python dependencies..."
 pip3 install --quiet --break-system-packages plotext pyfiglet sshkeyboard

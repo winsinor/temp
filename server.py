@@ -197,7 +197,7 @@ if __name__ == "__main__":
     fan_device = None
     try:
         from gpiozero import PWMOutputDevice
-        fan_device = PWMOutputDevice(14, frequency=100, start_value=0.0)
+        fan_device = PWMOutputDevice(18, frequency=100, start_value=0.0)
     except Exception:
         pass
 

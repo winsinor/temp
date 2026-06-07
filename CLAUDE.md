@@ -288,12 +288,24 @@ python3 updater.py  # Shows download/update messages on stderr
 - [x] Dark theme UI
 - [x] GPU support in both dashboards
 - [x] Temperature monitoring
+- [x] Device names (CPU model, GPU model) in UI
+- [x] Current temperature display next to device names
+- [x] Smart time axis labels (adaptive intervals based on range)
+- [x] Disk I/O charting
+- [x] Accurate time-range-specific averages
+
+## Known Issues
+
+- **Y-axis unit labels not rendering** (in progress)
+  - Code is present for `%` units on CPU/RAM/GPU and `MB/s` on Disk I/O
+  - Chart.js callback may not be evaluating properly
+  - Workaround: Check browser console (F12) for errors
+  - Solution: May need to verify Chart.js version compatibility or use different approach
 
 ## Future Enhancements
 
 - [ ] HyperPixel 4 display support (480x800 @ 60Hz)
 - [ ] Network I/O monitoring (bytes in/out)
-- [ ] Disk I/O monitoring (read/write throughput)
 - [ ] Process monitoring (top N processes)
 - [ ] Persistent history logging to SQLite
 - [ ] Custom color themes for web UI
@@ -304,6 +316,17 @@ python3 updater.py  # Shows download/update messages on stderr
 - [ ] Grafana integration
 
 ## Common Issues
+
+### Y-axis unit labels not showing on charts
+**Status:** In progress - code is written but not rendering
+- Files affected: `web.py` (HTML template JavaScript section)
+- Expected: `%` on CPU/RAM/GPU charts, `MB/s` on Disk I/O
+- Current: Y-axis ticks show numbers only without units
+- Possible causes:
+  - Chart.js callback not evaluating (check browser console F12)
+  - Arrow function vs function syntax issue (recently changed to `function(v) {}`)
+  - Config spread/merge not preserving options properly
+- Solution: Debug chart rendering, may need different Chart.js approach
 
 ### Dashboard shows old version
 Clear cache and re-download:
@@ -325,6 +348,20 @@ Some systems (containers, VMs) lack thermal zone files. Dashboard continues with
 
 ### High CPU usage from dashboard
 Normal with 1-second updates. Can increase `INTERVAL` in code if needed.
+
+## Recent Changes (To Fix)
+
+Last commits focused on adding:
+1. **Device names** - CPU model from `/proc/cpuinfo`, GPU names from `nvidia-smi`
+2. **Current temperatures** - Displayed next to device names in status line
+3. **Smart time axis labels** - Intervals adapt to selected time range (30s to 24h)
+4. **Y-axis unit labels** - Added callbacks for `%` and `MB/s` (NOT RENDERING)
+
+All changes are on `main` branch. Work directly on `main` for auto-update.
+
+**Files to check:**
+- `web.py` - Lines 440-520 for chart configuration and y-axis callbacks
+- `web.py` - Lines 395-425 for `getSmartLabels()` function
 
 ## Performance Characteristics
 

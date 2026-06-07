@@ -332,6 +332,7 @@ HTML_TEMPLATE = '''
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: false,
                 plugins: {
                     legend: {
                         display: false,
@@ -352,7 +353,7 @@ HTML_TEMPLATE = '''
             }
         };
 
-        async function loadData(seconds) {
+        async function loadData(seconds, isRangeChange = false) {
             currentRange = seconds;
             try {
                 const response = await fetch(`/api/metrics?seconds=${seconds}`);
@@ -366,73 +367,96 @@ HTML_TEMPLATE = '''
                 });
 
                 // CPU chart
-                if (charts.cpu) charts.cpu.destroy();
-                charts.cpu = new Chart(document.getElementById('cpuChart'), {
-                    ...chartConfig,
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'CPU',
-                            data: data.cpu,
-                            borderColor: '#e87722',
-                            backgroundColor: 'rgba(232, 119, 34, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }]
-                    }
-                });
+                if (!charts.cpu || isRangeChange) {
+                    if (charts.cpu) charts.cpu.destroy();
+                    charts.cpu = new Chart(document.getElementById('cpuChart'), {
+                        ...chartConfig,
+                        data: {
+                            labels,
+                            datasets: [{
+                                label: 'CPU',
+                                data: data.cpu,
+                                borderColor: '#e87722',
+                                backgroundColor: 'rgba(232, 119, 34, 0.1)',
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        }
+                    });
+                } else {
+                    charts.cpu.data.labels = labels;
+                    charts.cpu.data.datasets[0].data = data.cpu;
+                    charts.cpu.update('none');
+                }
                 const cpuAvg = (data.cpu.reduce((a, b) => a + b, 0) / data.cpu.length).toFixed(1);
                 document.getElementById('cpuStatus').textContent = `Average: ${cpuAvg}%`;
 
                 // RAM chart
-                if (charts.ram) charts.ram.destroy();
-                charts.ram = new Chart(document.getElementById('ramChart'), {
-                    ...chartConfig,
-                    data: {
-                        labels,
-                        datasets: [{
-                            label: 'RAM',
-                            data: data.ram,
-                            borderColor: '#8c50f5',
-                            backgroundColor: 'rgba(140, 80, 245, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }]
-                    }
-                });
+                if (!charts.ram || isRangeChange) {
+                    if (charts.ram) charts.ram.destroy();
+                    charts.ram = new Chart(document.getElementById('ramChart'), {
+                        ...chartConfig,
+                        data: {
+                            labels,
+                            datasets: [{
+                                label: 'RAM',
+                                data: data.ram,
+                                borderColor: '#8c50f5',
+                                backgroundColor: 'rgba(140, 80, 245, 0.1)',
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        }
+                    });
+                } else {
+                    charts.ram.data.labels = labels;
+                    charts.ram.data.datasets[0].data = data.ram;
+                    charts.ram.update('none');
+                }
                 const ramAvg = (data.ram.reduce((a, b) => a + b, 0) / data.ram.length).toFixed(1);
                 document.getElementById('ramStatus').textContent = `Average: ${ramAvg}%`;
 
                 // GPU charts
-                const gpuContainer = document.getElementById('gpuCharts');
-                gpuContainer.innerHTML = '';
+                if (isRangeChange) {
+                    const gpuContainer = document.getElementById('gpuCharts');
+                    gpuContainer.innerHTML = '';
+                    Object.keys(charts).forEach(k => { if (k.startsWith('gpu')) charts[k].destroy(); });
+                }
+
                 if (data.gpu_count > 0) {
+                    const gpuContainer = document.getElementById('gpuCharts');
                     for (let i = 0; i < data.gpu_count; i++) {
                         const gpu = data.gpu[i];
-                        const container = document.createElement('div');
-                        container.className = 'chart-container';
-                        container.innerHTML = `
-                            <div class="chart-title">GPU ${i} Usage</div>
-                            <canvas id="gpuChart${i}"></canvas>
-                            <div class="status" id="gpuStatus${i}"></div>
-                        `;
-                        gpuContainer.appendChild(container);
-
-                        if (charts[`gpu${i}`]) charts[`gpu${i}`].destroy();
-                        charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
-                            ...chartConfig,
-                            data: {
-                                labels,
-                                datasets: [{
-                                    label: `GPU ${i}`,
-                                    data: gpu.usage,
-                                    borderColor: '#ff9500',
-                                    backgroundColor: 'rgba(255, 149, 0, 0.1)',
-                                    tension: 0.4,
-                                    fill: true
-                                }]
-                            }
-                        });
+                        if (!document.getElementById(`gpuChart${i}`)) {
+                            const container = document.createElement('div');
+                            container.className = 'chart-container';
+                            container.innerHTML = `
+                                <div class="chart-title">GPU ${i} Usage</div>
+                                <canvas id="gpuChart${i}"></canvas>
+                                <div class="status" id="gpuStatus${i}"></div>
+                            `;
+                            gpuContainer.appendChild(container);
+                        }
+                        if (!charts[`gpu${i}`]) {
+                            charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
+                                ...chartConfig,
+                                data: {
+                                    labels,
+                                    datasets: [{
+                                        label: `GPU ${i}`,
+                                        data: gpu.usage,
+                                        borderColor: '#ff9500',
+                                        backgroundColor: 'rgba(255, 149, 0, 0.1)',
+                                        tension: 0.4,
+                                        fill: true
+                                    }]
+                                }
+                            });
+                        } else {
+                            charts[`gpu${i}`].data.labels = labels;
+                            charts[`gpu${i}`].data.datasets[0].data = gpu.usage;
+                            charts[`gpu${i}`].update('none');
+                        }
                         const gpuAvg = (gpu.usage.reduce((a, b) => a + b, 0) / gpu.usage.length).toFixed(1);
                         document.getElementById(`gpuStatus${i}`).textContent = `Average: ${gpuAvg}%`;
                     }
@@ -446,13 +470,13 @@ HTML_TEMPLATE = '''
             btn.addEventListener('click', (e) => {
                 document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
                 e.target.classList.add('active');
-                loadData(parseInt(e.target.dataset.seconds));
+                loadData(parseInt(e.target.dataset.seconds), true);
             });
         });
 
-        // Initial load and auto-refresh
-        loadData(currentRange);
-        setInterval(() => loadData(currentRange), 1000);
+        // Initial load and auto-refresh every 2 seconds
+        loadData(currentRange, true);
+        setInterval(() => loadData(currentRange), 2000);
     </script>
 </body>
 </html>

@@ -436,10 +436,8 @@ HTML_TEMPLATE = '''
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
                     if (charts.cpu) charts.cpu.destroy();
-                    const cpuConfig = JSON.parse(JSON.stringify(chartConfig));
-                    cpuConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.cpu = new Chart(document.getElementById('cpuChart'), {
-                        ...cpuConfig,
+                        type: 'line',
                         data: {
                             labels,
                             datasets: [{
@@ -450,6 +448,21 @@ HTML_TEMPLATE = '''
                                 tension: 0.4,
                                 fill: true
                             }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100,
+                                    grid: { color: '#2a2a2a' },
+                                    ticks: { color: '#707070', callback: v => v + '%' }
+                                },
+                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
+                            }
                         }
                     });
                 } else {
@@ -464,10 +477,8 @@ HTML_TEMPLATE = '''
                 // RAM chart
                 if (!charts.ram || isRangeChange) {
                     if (charts.ram) charts.ram.destroy();
-                    const ramConfig = JSON.parse(JSON.stringify(chartConfig));
-                    ramConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.ram = new Chart(document.getElementById('ramChart'), {
-                        ...ramConfig,
+                        type: 'line',
                         data: {
                             labels,
                             datasets: [{
@@ -478,6 +489,21 @@ HTML_TEMPLATE = '''
                                 tension: 0.4,
                                 fill: true
                             }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100,
+                                    grid: { color: '#2a2a2a' },
+                                    ticks: { color: '#707070', callback: v => v + '%' }
+                                },
+                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
+                            }
                         }
                     });
                 } else {
@@ -511,10 +537,8 @@ HTML_TEMPLATE = '''
                             gpuContainer.appendChild(container);
                         }
                         if (!charts[`gpu${i}`]) {
-                            const gpuConfig = JSON.parse(JSON.stringify(chartConfig));
-                            gpuConfig.options.scales.y.ticks.callback = v => v + '%';
                             charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
-                                ...gpuConfig,
+                                type: 'line',
                                 data: {
                                     labels,
                                     datasets: [{
@@ -525,6 +549,21 @@ HTML_TEMPLATE = '''
                                         tension: 0.4,
                                         fill: true
                                     }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    animation: false,
+                                    plugins: { legend: { display: false } },
+                                    scales: {
+                                        y: {
+                                            beginAtZero: true,
+                                            max: 100,
+                                            grid: { color: '#2a2a2a' },
+                                            ticks: { color: '#707070', callback: v => v + '%' }
+                                        },
+                                        x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
+                                    }
                                 }
                             });
                         } else {

@@ -11,6 +11,7 @@ from datetime import datetime
 
 INTERVAL     = 1.0
 HISTORY_SIZE = 600
+CHART_H      = 4   # chart rows per metric
 
 # ── ANSI helpers ─────────────────────────────────────────────────────────────
 RST = "\033[0m"
@@ -29,13 +30,12 @@ C_BD  = fg( 60,  44,  98)   # dim border
 C_DM  = fg(110,  90, 140)   # muted secondary text
 C_TL  = fg(215, 135,  85)   # label / title
 
-BRAILLE = "⠀⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏"
+BLOCKS  = " ▁▂▃▄▅▆▇█"   # index 0=empty, 8=full block
 ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 DISK_RE = re.compile(r'^(sd[a-z]+|nvme\d+n\d+|mmcblk\d+|vd[a-z]+|xvd[a-z]+|hd[a-z])$')
 
 
 def vlen(s):
-    """Visual length of s, ignoring ANSI escape codes."""
     return len(ANSI_RE.sub('', s))
 
 
@@ -46,15 +46,31 @@ def val_col(pct):
     return C_HOT
 
 
-def sparkline(values, lo, hi, width):
-    """Colored Braille sparkline of the given visual width."""
-    vals = list(values)[-width:]
-    pad  = max(0, width - len(vals))
-    out  = C_BD + BRAILLE[0] * pad + RST
-    for v in vals:
-        norm = max(0.0, min(1.0, (v - lo) / (hi - lo) if hi > lo else 0.0))
-        out += val_col(norm * 100) + BRAILLE[int(norm * (len(BRAILLE) - 1))] + RST
-    return out
+def multichart(values, lo, hi, width):
+    """Return CHART_H lines (top→bottom) of block-character chart, each `width` cols wide."""
+    levels = CHART_H * 8
+    vals   = list(values)[-width:]
+    pad    = max(0, width - len(vals))
+
+    normed  = [0.0] * pad + [
+        max(0.0, min(1.0, (v - lo) / (hi - lo) if hi > lo else 0.0))
+        for v in vals
+    ]
+    heights = [n * levels for n in normed]
+
+    rows = []
+    for row in range(CHART_H - 1, -1, -1):   # top row first
+        base = row * 8
+        line = ""
+        for h, n in zip(heights, normed):
+            filled = max(0.0, min(8.0, h - base))
+            idx    = round(filled)
+            if idx == 0:
+                line += C_BD + "▁" + RST if row == 0 else " "
+            else:
+                line += val_col(n * 100) + BLOCKS[idx] + RST
+        rows.append(line)
+    return rows
 
 
 def term_size():
@@ -161,7 +177,6 @@ class MetricsCollector:
                 for line in f:
                     parts = line.split()
                     if len(parts) >= 14 and DISK_RE.match(parts[2]):
-                        # fields 5 and 9 are sectors_read and sectors_written
                         curr[parts[2]] = (int(parts[5]), int(parts[9]))
 
             r_mb = w_mb = 0.0
@@ -202,19 +217,20 @@ class MetricsCollector:
 
 def build_frame(metrics, hist, W, sample_n):
     """Return a list of display lines for the current frame."""
-    # Row layout (visual widths):
-    #   "  label___  value_____  extra_____  │sparkline│"
-    #    2+8       + 2+9       + 2+9        + 1+SW+1   = 34 + SW = W
-    SPARK_W = max(8, W - 34)
+    # Chart lines span full width: │ + content(W-2) + │
+    CHART_W = max(8, W - 2)
     divider = f"{C_BD}{'─' * W}{RST}"
 
-    def mline(label, pct_col, val_str, extra, spark_data, lo=0.0, hi=100.0):
+    def chart(spark_data, lo=0.0, hi=100.0):
+        rows = multichart(spark_data, lo, hi, CHART_W)
+        return [f"{C_BD}│{RST}{r}{C_BD}│{RST}" for r in rows]
+
+    def info(label, pct_col, val_str, extra=""):
         col = val_col(pct_col)
-        lbl = f"  {C_TL}{label:<8}{RST}"
-        val = f"  {col}{BLD}{val_str:<9}{RST}"
-        ext = f"  {C_DM}{extra:<9}{RST}" if extra else " " * 11
-        sp  = sparkline(spark_data, lo, hi, SPARK_W)
-        return f"{lbl}{val}{ext}{C_BD}│{RST}{sp}{C_BD}│{RST}"
+        s   = f"  {C_TL}{label:<8}{RST}  {col}{BLD}{val_str:<9}{RST}"
+        if extra:
+            s += f"  {C_DM}{extra}{RST}"
+        return s
 
     lines = []
 
@@ -222,19 +238,19 @@ def build_frame(metrics, hist, W, sample_n):
     now_s = datetime.now().strftime("%a %b %d  %H:%M:%S")
     logo  = f" {C_PU}{BLD}◆{RST} {C_TL}{BLD}CLAUDE METRICS{RST}"
     clock = f"{C_DM}{now_s}{RST} "
-    gap   = max(0, W - vlen(logo) - vlen(clock))
-    lines.append(logo + " " * gap + clock)
+    lines.append(logo + " " * max(0, W - vlen(logo) - vlen(clock)) + clock)
     lines.append(divider)
 
     # CPU
     t = metrics["cpu_temp"]
-    lines.append(mline("CPU", metrics["cpu"], f"{metrics['cpu']:5.1f}%",
-                        f"{t:.0f}°C" if t else "---", hist["cpu"]))
+    lines.append(info("CPU", metrics["cpu"], f"{metrics['cpu']:5.1f}%",
+                       f"{t:.0f}°C" if t else "---"))
+    lines.extend(chart(hist["cpu"]))
 
     # RAM
-    lines.append(mline("RAM", metrics["ram"], f"{metrics['ram']:5.1f}%",
-                        f"{metrics['ram_used']:.1f}/{metrics['ram_gb']:.0f}G",
-                        hist["ram"]))
+    lines.append(info("RAM", metrics["ram"], f"{metrics['ram']:5.1f}%",
+                       f"{metrics['ram_used']:.1f}/{metrics['ram_gb']:.0f}G"))
+    lines.extend(chart(hist["ram"]))
 
     lines.append(divider)
 
@@ -242,10 +258,10 @@ def build_frame(metrics, hist, W, sample_n):
     for i, (u, t, m) in enumerate(
         zip(metrics["gpu_usage"], metrics["gpu_temp"], metrics["gpu_mem"])
     ):
-        lines.append(mline(f"GPU {i}", u, f"{u:5.1f}%",
-                            f"{t:.0f}°C", hist["gpu"][i]))
-        lines.append(mline(f"  VRAM{i}", m, f"{m:5.1f}%", "",
-                            hist["gpu_mem"][i]))
+        lines.append(info(f"GPU {i}", u, f"{u:5.1f}%", f"{t:.0f}°C"))
+        lines.extend(chart(hist["gpu"][i]))
+        lines.append(info(f"  VRAM{i}", m, f"{m:5.1f}%"))
+        lines.extend(chart(hist["gpu_mem"][i]))
 
     if metrics["gpu_usage"]:
         lines.append(divider)
@@ -254,10 +270,10 @@ def build_frame(metrics, hist, W, sample_n):
     r, w = metrics["disk_r"], metrics["disk_w"]
     hi_d = max(max(hist["disk_r"], default=1.0),
                max(hist["disk_w"], default=1.0), 1.0)
-    lines.append(mline("Disk R", 100.0 * r / hi_d,
-                        f"{r:6.2f}", "MB/s", hist["disk_r"], 0.0, hi_d))
-    lines.append(mline("Disk W", 100.0 * w / hi_d,
-                        f"{w:6.2f}", "MB/s", hist["disk_w"], 0.0, hi_d))
+    lines.append(info("Disk R", 100.0 * r / hi_d, f"{r:6.2f}", "MB/s"))
+    lines.extend(chart(hist["disk_r"], 0.0, hi_d))
+    lines.append(info("Disk W", 100.0 * w / hi_d, f"{w:6.2f}", "MB/s"))
+    lines.extend(chart(hist["disk_w"], 0.0, hi_d))
 
     lines.append(divider)
 
@@ -285,7 +301,7 @@ def main():
         "disk_w":  deque(maxlen=HISTORY_SIZE),
     }
 
-    sys.stdout.write("\033[?25l\033[2J")  # hide cursor, clear screen
+    sys.stdout.write("\033[?25l\033[2J")
     sys.stdout.flush()
 
     try:
@@ -312,7 +328,7 @@ def main():
             for line in frame:
                 pad = max(0, W - vlen(line))
                 out.append(line + " " * pad + "\n")
-            out.append("\033[J")  # clear anything below
+            out.append("\033[J")
 
             sys.stdout.write("".join(out))
             sys.stdout.flush()

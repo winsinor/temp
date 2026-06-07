@@ -459,7 +459,7 @@ HTML_TEMPLATE = '''
                                     beginAtZero: true,
                                     max: 100,
                                     grid: { color: '#2a2a2a' },
-                                    ticks: { color: '#707070', callback: v => v + '%' }
+                                    ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
                                 },
                                 x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                             }
@@ -500,7 +500,7 @@ HTML_TEMPLATE = '''
                                     beginAtZero: true,
                                     max: 100,
                                     grid: { color: '#2a2a2a' },
-                                    ticks: { color: '#707070', callback: v => v + '%' }
+                                    ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
                                 },
                                 x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                             }
@@ -560,7 +560,7 @@ HTML_TEMPLATE = '''
                                             beginAtZero: true,
                                             max: 100,
                                             grid: { color: '#2a2a2a' },
-                                            ticks: { color: '#707070', callback: v => v + '%' }
+                                            ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
                                         },
                                         x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                                     }
@@ -594,7 +594,7 @@ HTML_TEMPLATE = '''
                             responsive: true, maintainAspectRatio: false, animation: false,
                             plugins: { legend: { display: true, labels: { color: '#b0b0b0' } } },
                             scales: {
-                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: v => v + ' MB/s' } },
+                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: function(v) { return v + ' MB/s'; } } },
                                 x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                             }
                         }

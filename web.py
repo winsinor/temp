@@ -368,47 +368,52 @@ HTML_TEMPLATE = '''
     <script>
         const charts = {};
         let currentRange = 300;
+        const NICE_INTERVALS = [1, 2, 5, 10, 15, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200];
 
-        const chartConfig = {
-            type: 'line',
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                plugins: {
-                    legend: {
-                        display: false,
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        max: 100,
-                        grid: { color: '#2a2a2a' },
-                        ticks: { color: '#707070' }
-                    },
-                    x: {
-                        grid: { color: '#2a2a2a' },
-                        ticks: { color: '#707070' }
-                    }
-                }
-            }
-        };
+        // Format an elapsed-seconds value for an x-axis tick.
+        function fmtTime(t) {
+            t = Math.round(t);
+            if (t < 60) return t + 's';
+            const min = Math.floor(t / 60);
+            const sec = t % 60;
+            if (t < 3600) return sec === 0 ? min + 'm' : min + 'm' + sec + 's';
+            const hr = Math.floor(t / 3600);
+            const rem = min % 60;
+            return rem === 0 ? hr + 'h' : hr + 'h' + rem + 'm';
+        }
 
-        // Bucket `arr` into `n` fixed time-based bins spanning [0, totalDuration].
-        // Uses rawTimes for placement so bucket boundaries never shift as new data arrives.
-        function condenseByTime(rawTimes, arr, n, totalDuration) {
+        // Pick a clean tick spacing that yields roughly `target` labels across the range.
+        function tickInterval(seconds, target) {
+            const raw = seconds / target;
+            return NICE_INTERVALS.find(c => c >= raw) || NICE_INTERVALS[NICE_INTERVALS.length - 1];
+        }
+
+        // Bucket samples into `n` fixed time bins, anchored to the RIGHT edge so the
+        // newest sample sits at x≈totalDuration. Empty interior buckets are simply
+        // omitted (the line connects across them, so no spurious gaps), and when there
+        // isn't enough history the missing buckets fall on the LEFT, leaving it blank.
+        // Returns an array of {x, y} points ordered left→right.
+        function bucketPoints(rawTimes, arr, n, totalDuration) {
+            if (!rawTimes.length) return [];
             const bucketSize = totalDuration / n;
-            const sums   = new Array(n).fill(0);
+            const latest = rawTimes[rawTimes.length - 1];
+            const sums = new Array(n).fill(0);
             const counts = new Array(n).fill(0);
             for (let i = 0; i < arr.length; i++) {
                 const v = arr[i];
-                if (v === null || v === undefined) continue;
-                const b = Math.min(Math.floor(rawTimes[i] / bucketSize), n - 1);
+                if (v === null || v === undefined || isNaN(v)) continue;
+                const xFromLeft = totalDuration - (latest - rawTimes[i]);
+                let b = Math.floor(xFromLeft / bucketSize);
+                if (b < 0) continue;            // older than the window
+                if (b > n - 1) b = n - 1;       // newest sample → last bucket
                 sums[b] += v;
                 counts[b]++;
             }
-            return sums.map((s, i) => counts[i] > 0 ? s / counts[i] : null);
+            const pts = [];
+            for (let b = 0; b < n; b++) {
+                if (counts[b] > 0) pts.push({ x: (b + 0.5) * bucketSize, y: sums[b] / counts[b] });
+            }
+            return pts;
         }
 
         function avg(arr) {
@@ -416,35 +421,41 @@ HTML_TEMPLATE = '''
             return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
         }
 
-        function getSmartLabels(times, seconds) {
-            if (times.length === 0) return [];
-            const n = times.length;
-            const labels = new Array(n).fill('');
-            const bucketSize = seconds / n;
+        // Build a fresh options object. Functions (tick callbacks) are defined inline
+        // here rather than cloned, so they are never stripped by serialization.
+        function makeOptions(seconds, interval, yUnit, opts = {}) {
+            const yMax = opts.yMax === undefined ? 100 : opts.yMax;
+            const y = { beginAtZero: true, grid: { color: '#2a2a2a' },
+                        ticks: { color: '#707070', callback: v => v + yUnit } };
+            if (yMax !== null) y.max = yMax;
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: { legend: opts.legend || { display: false } },
+                scales: {
+                    y,
+                    x: {
+                        type: 'linear',
+                        min: 0,
+                        max: seconds,
+                        grid: { color: '#2a2a2a' },
+                        ticks: {
+                            color: '#707070',
+                            stepSize: interval,
+                            autoSkip: false,
+                            maxRotation: 0,
+                            minRotation: 0,
+                            callback: v => fmtTime(v)
+                        }
+                    }
+                }
+            };
+        }
 
-            // Snap to a clean interval to get 4–8 ticks
-            const niceIntervals = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200];
-            const rawInterval = seconds / 6;
-            const found = niceIntervals.find(c => c >= rawInterval);
-            const interval = found || niceIntervals[niceIntervals.length - 1];
-
-            function fmt(t) {
-                t = Math.round(t);
-                if (t < 60) return t + 's';
-                const min = Math.floor(t / 60);
-                const sec = t % 60;
-                if (t < 3600) return sec === 0 ? min + 'm' : min + 'm' + sec + 's';
-                const hr = Math.floor(t / 3600);
-                const rem = min % 60;
-                return rem === 0 ? hr + 'h' : hr + 'h' + rem + 'm';
-            }
-
-            for (let tick = 0; tick <= seconds; tick += interval) {
-                // Direct O(1) bucket lookup: times[i] = (i+0.5)*bucketSize
-                const idx = Math.max(0, Math.min(n - 1, Math.round(tick / bucketSize - 0.5)));
-                labels[idx] = fmt(tick);
-            }
-            return labels;
+        function lineDataset(label, color, fillColor, points) {
+            return { label, data: points, borderColor: color, backgroundColor: fillColor,
+                     tension: 0.4, fill: true, pointRadius: 0, borderWidth: 2 };
         }
 
         async function loadData(seconds, isRangeChange = false) {
@@ -454,45 +465,27 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 if (!data || data.error) return;
 
-                // Fixed bucket count for the selected range — never depends on how many
-                // samples arrived, so bucket boundaries are stable between refreshes.
-                // Short ranges get 1 bucket/sec; longer ranges cap at 200 buckets.
-                // Empty buckets at the end → null → blank space, no stretching.
+                // Fixed bucket count for the selected range — independent of how many
+                // samples have arrived, so bucket boundaries stay stable between refreshes.
                 const rawTimes = data.times;
                 const n = Math.min(200, seconds);
-                const bucketSize = seconds / n;
-                data.times  = Array.from({length: n}, (_, i) => (i + 0.5) * bucketSize);
-                data.cpu    = condenseByTime(rawTimes, data.cpu,    n, seconds);
-                data.ram    = condenseByTime(rawTimes, data.ram,    n, seconds);
-                data.disk_r = condenseByTime(rawTimes, data.disk_r, n, seconds);
-                data.disk_w = condenseByTime(rawTimes, data.disk_w, n, seconds);
-                for (let i = 0; i < data.gpu_count; i++)
-                    data.gpu[i].usage = condenseByTime(rawTimes, data.gpu[i].usage, n, seconds);
+                const interval = tickInterval(seconds, 9);
 
-                const labels = getSmartLabels(data.times, seconds);
+                const cpuPts  = bucketPoints(rawTimes, data.cpu,    n, seconds);
+                const ramPts  = bucketPoints(rawTimes, data.ram,    n, seconds);
+                const diskRPts = bucketPoints(rawTimes, data.disk_r, n, seconds);
+                const diskWPts = bucketPoints(rawTimes, data.disk_w, n, seconds);
 
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
                     if (charts.cpu) charts.cpu.destroy();
-                    const cpuConfig = JSON.parse(JSON.stringify(chartConfig));
-                    cpuConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.cpu = new Chart(document.getElementById('cpuChart'), {
-                        ...cpuConfig,
-                        data: {
-                            labels,
-                            datasets: [{
-                                label: 'CPU',
-                                data: data.cpu,
-                                borderColor: '#e87722',
-                                backgroundColor: 'rgba(232, 119, 34, 0.1)',
-                                tension: 0.4,
-                                fill: true
-                            }]
-                        }
+                        type: 'line',
+                        data: { datasets: [lineDataset('CPU', '#e87722', 'rgba(232, 119, 34, 0.1)', cpuPts)] },
+                        options: makeOptions(seconds, interval, '%')
                     });
                 } else {
-                    charts.cpu.data.labels = labels;
-                    charts.cpu.data.datasets[0].data = data.cpu;
+                    charts.cpu.data.datasets[0].data = cpuPts;
                     charts.cpu.update('none');
                 }
                 const cpuAvg = avg(data.cpu).toFixed(1);
@@ -502,25 +495,13 @@ HTML_TEMPLATE = '''
                 // RAM chart
                 if (!charts.ram || isRangeChange) {
                     if (charts.ram) charts.ram.destroy();
-                    const ramConfig = JSON.parse(JSON.stringify(chartConfig));
-                    ramConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.ram = new Chart(document.getElementById('ramChart'), {
-                        ...ramConfig,
-                        data: {
-                            labels,
-                            datasets: [{
-                                label: 'RAM',
-                                data: data.ram,
-                                borderColor: '#8c50f5',
-                                backgroundColor: 'rgba(140, 80, 245, 0.1)',
-                                tension: 0.4,
-                                fill: true
-                            }]
-                        }
+                        type: 'line',
+                        data: { datasets: [lineDataset('RAM', '#8c50f5', 'rgba(140, 80, 245, 0.1)', ramPts)] },
+                        options: makeOptions(seconds, interval, '%')
                     });
                 } else {
-                    charts.ram.data.labels = labels;
-                    charts.ram.data.datasets[0].data = data.ram;
+                    charts.ram.data.datasets[0].data = ramPts;
                     charts.ram.update('none');
                 }
                 const ramAvg = avg(data.ram).toFixed(1);
@@ -537,7 +518,7 @@ HTML_TEMPLATE = '''
                 if (data.gpu_count > 0) {
                     const gpuContainer = document.getElementById('gpuCharts');
                     for (let i = 0; i < data.gpu_count; i++) {
-                        const gpu = data.gpu[i];
+                        const gpuPts = bucketPoints(rawTimes, data.gpu[i].usage, n, seconds);
                         if (!document.getElementById(`gpuChart${i}`)) {
                             const container = document.createElement('div');
                             container.className = 'chart-container';
@@ -549,62 +530,43 @@ HTML_TEMPLATE = '''
                             gpuContainer.appendChild(container);
                         }
                         if (!charts[`gpu${i}`]) {
-                            const gpuConfig = JSON.parse(JSON.stringify(chartConfig));
-                            gpuConfig.options.scales.y.ticks.callback = v => v + '%';
                             charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
-                                ...gpuConfig,
-                                data: {
-                                    labels,
-                                    datasets: [{
-                                        label: `GPU ${i}`,
-                                        data: gpu.usage,
-                                        borderColor: '#ff9500',
-                                        backgroundColor: 'rgba(255, 149, 0, 0.1)',
-                                        tension: 0.4,
-                                        fill: true
-                                    }]
-                                }
+                                type: 'line',
+                                data: { datasets: [lineDataset(`GPU ${i}`, '#ff9500', 'rgba(255, 149, 0, 0.1)', gpuPts)] },
+                                options: makeOptions(seconds, interval, '%')
                             });
                         } else {
-                            charts[`gpu${i}`].data.labels = labels;
-                            charts[`gpu${i}`].data.datasets[0].data = gpu.usage;
+                            charts[`gpu${i}`].data.datasets[0].data = gpuPts;
                             charts[`gpu${i}`].update('none');
                         }
-                        const gpuAvg = avg(gpu.usage).toFixed(1);
+                        const gpuAvg = avg(data.gpu[i].usage).toFixed(1);
                         const gpuModel = data.gpu_models[i] || `GPU ${i}`;
                         const gpuTempStr = data.gpu_current_temps[i] > 0 ? ` • ${data.gpu_current_temps[i].toFixed(0)}°C` : '';
                         document.getElementById(`gpuStatus${i}`).textContent = `${gpuModel}${gpuTempStr} • Avg: ${gpuAvg}%`;
                     }
                 }
-                // Disk I/O chart
-                const diskAvg = arr => avg(arr).toFixed(2);
+
+                // Disk I/O chart (auto-scaled y-axis, two series)
                 if (!charts.disk || isRangeChange) {
                     if (charts.disk) charts.disk.destroy();
                     charts.disk = new Chart(document.getElementById('diskChart'), {
                         type: 'line',
                         data: {
-                            labels,
                             datasets: [
-                                { label: 'Read MB/s', data: data.disk_r, borderColor: '#00d2ff', backgroundColor: 'rgba(0,210,255,0.1)', tension: 0.4, fill: true },
-                                { label: 'Write MB/s', data: data.disk_w, borderColor: '#ff5f6d', backgroundColor: 'rgba(255,95,109,0.1)', tension: 0.4, fill: true }
+                                lineDataset('Read MB/s',  '#00d2ff', 'rgba(0,210,255,0.1)', diskRPts),
+                                lineDataset('Write MB/s', '#ff5f6d', 'rgba(255,95,109,0.1)', diskWPts)
                             ]
                         },
-                        options: {
-                            responsive: true, maintainAspectRatio: false, animation: false,
-                            plugins: { legend: { display: true, labels: { color: '#b0b0b0' } } },
-                            scales: {
-                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: v => v + ' MB/s' } },
-                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
-                            }
-                        }
+                        options: makeOptions(seconds, interval, ' MB/s',
+                            { yMax: null, legend: { display: true, labels: { color: '#b0b0b0' } } })
                     });
                 } else {
-                    charts.disk.data.labels = labels;
-                    charts.disk.data.datasets[0].data = data.disk_r;
-                    charts.disk.data.datasets[1].data = data.disk_w;
+                    charts.disk.data.datasets[0].data = diskRPts;
+                    charts.disk.data.datasets[1].data = diskWPts;
                     charts.disk.update('none');
                 }
-                document.getElementById('diskStatus').textContent = `R: ${diskAvg(data.disk_r)} MB/s  W: ${diskAvg(data.disk_w)} MB/s`;
+                document.getElementById('diskStatus').textContent =
+                    `R: ${avg(data.disk_r).toFixed(2)} MB/s  W: ${avg(data.disk_w).toFixed(2)} MB/s`;
 
             } catch (e) {
                 console.error('Error loading data:', e);

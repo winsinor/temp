@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 import subprocess
 import shutil
 import re
+import signal
 
 INTERVAL = 1.0
 HISTORY_SIZE = 86400
@@ -397,29 +398,28 @@ HTML_TEMPLATE = '''
         function getSmartLabels(times, seconds) {
             if (times.length === 0) return [];
             const labels = new Array(times.length).fill('');
+            const n = times.length;
+            const duration = times[n - 1];
 
-            let interval = 1;
-            if (seconds <= 30) interval = 5;
-            else if (seconds <= 60) interval = 10;
-            else if (seconds <= 300) interval = 30;
-            else if (seconds <= 1800) interval = 300;
-            else if (seconds <= 3600) interval = 600;
-            else if (seconds <= 14400) interval = 1800;
-            else interval = 7200;
+            // Snap raw interval up to the nearest clean value to get 4–8 ticks
+            const rawInterval = duration / 6;
+            const niceIntervals = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200];
+            const interval = niceIntervals.find(c => c >= rawInterval) ?? niceIntervals[niceIntervals.length - 1];
 
-            const lastTime = times[times.length - 1];
-            times.forEach((t, i) => {
-                if (Math.abs(t - Math.round(t / interval) * interval) < 0.5) {
-                    const min = Math.floor(t / 60);
-                    const sec = Math.floor(t % 60);
-                    labels[i] = min > 0 ? `${min}m${sec}s` : `${sec}s`;
-                }
-            });
-            if (labels[labels.length - 1] === '') {
-                const t = lastTime;
+            function fmt(t) {
+                t = Math.round(t);
+                if (t < 60) return `${t}s`;
                 const min = Math.floor(t / 60);
-                const sec = Math.floor(t % 60);
-                labels[labels.length - 1] = min > 0 ? `${min}m${sec}s` : `${sec}s`;
+                const sec = t % 60;
+                if (t < 3600) return sec === 0 ? `${min}m` : `${min}m${sec}s`;
+                const hr = Math.floor(t / 3600);
+                const rem = min % 60;
+                return rem === 0 ? `${hr}h` : `${hr}h${rem}m`;
+            }
+
+            for (let tick = 0; tick <= duration; tick += interval) {
+                const idx = times.findIndex(t => t >= tick);
+                if (idx !== -1) labels[idx] = fmt(tick);
             }
             return labels;
         }
@@ -431,13 +431,27 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 if (!data || data.error) return;
 
+                // If data is shorter than the requested range, anchor the axis
+                // at `seconds` with a null sentinel — no stretching, just empty space
+                if (data.times.length > 0 && data.times[data.times.length - 1] < seconds * 0.9) {
+                    data.times.push(seconds);
+                    data.cpu.push(null);
+                    data.cpu_temp.push(null);
+                    data.ram.push(null);
+                    data.disk_r.push(null);
+                    data.disk_w.push(null);
+                    for (let i = 0; i < data.gpu_count; i++) data.gpu[i].usage.push(null);
+                }
+
                 const labels = getSmartLabels(data.times, seconds);
 
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
                     if (charts.cpu) charts.cpu.destroy();
+                    const cpuConfig = JSON.parse(JSON.stringify(chartConfig));
+                    cpuConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.cpu = new Chart(document.getElementById('cpuChart'), {
-                        type: 'line',
+                        ...cpuConfig,
                         data: {
                             labels,
                             datasets: [{
@@ -448,21 +462,6 @@ HTML_TEMPLATE = '''
                                 tension: 0.4,
                                 fill: true
                             }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: false,
-                            plugins: { legend: { display: false } },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    max: 100,
-                                    grid: { color: '#2a2a2a' },
-                                    ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
-                                },
-                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
-                            }
                         }
                     });
                 } else {
@@ -477,8 +476,10 @@ HTML_TEMPLATE = '''
                 // RAM chart
                 if (!charts.ram || isRangeChange) {
                     if (charts.ram) charts.ram.destroy();
+                    const ramConfig = JSON.parse(JSON.stringify(chartConfig));
+                    ramConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.ram = new Chart(document.getElementById('ramChart'), {
-                        type: 'line',
+                        ...ramConfig,
                         data: {
                             labels,
                             datasets: [{
@@ -489,21 +490,6 @@ HTML_TEMPLATE = '''
                                 tension: 0.4,
                                 fill: true
                             }]
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: false,
-                            plugins: { legend: { display: false } },
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    max: 100,
-                                    grid: { color: '#2a2a2a' },
-                                    ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
-                                },
-                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
-                            }
                         }
                     });
                 } else {
@@ -537,8 +523,10 @@ HTML_TEMPLATE = '''
                             gpuContainer.appendChild(container);
                         }
                         if (!charts[`gpu${i}`]) {
+                            const gpuConfig = JSON.parse(JSON.stringify(chartConfig));
+                            gpuConfig.options.scales.y.ticks.callback = v => v + '%';
                             charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
-                                type: 'line',
+                                ...gpuConfig,
                                 data: {
                                     labels,
                                     datasets: [{
@@ -549,21 +537,6 @@ HTML_TEMPLATE = '''
                                         tension: 0.4,
                                         fill: true
                                     }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    maintainAspectRatio: false,
-                                    animation: false,
-                                    plugins: { legend: { display: false } },
-                                    scales: {
-                                        y: {
-                                            beginAtZero: true,
-                                            max: 100,
-                                            grid: { color: '#2a2a2a' },
-                                            ticks: { color: '#707070', callback: function(v) { return v + '%'; } }
-                                        },
-                                        x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
-                                    }
                                 }
                             });
                         } else {
@@ -594,7 +567,7 @@ HTML_TEMPLATE = '''
                             responsive: true, maintainAspectRatio: false, animation: false,
                             plugins: { legend: { display: true, labels: { color: '#b0b0b0' } } },
                             scales: {
-                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: function(v) { return v + ' MB/s'; } } },
+                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: v => v + ' MB/s' } },
                                 x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                             }
                         }
@@ -667,9 +640,29 @@ class RequestHandler(BaseHTTPRequestHandler):
         pass
 
 
+_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web.pid")
+
+
+def _stop_existing():
+    if not os.path.exists(_PID_FILE):
+        return
+    try:
+        with open(_PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.5)
+    except (ValueError, OSError):
+        pass
+    try:
+        os.unlink(_PID_FILE)
+    except OSError:
+        pass
+
+
 def spawn_background(log_file):
     """Spawn the server in the background using subprocess."""
     script_path = os.path.abspath(__file__)
+    _stop_existing()
     with open(log_file, 'a') as log:
         proc = subprocess.Popen(
             [sys.executable, script_path, '--worker'],
@@ -678,6 +671,8 @@ def spawn_background(log_file):
             stdin=subprocess.DEVNULL,
             start_new_session=True
         )
+    with open(_PID_FILE, 'w') as f:
+        f.write(str(proc.pid))
     print(f"Web UI running in background (PID: {proc.pid})")
     print(f"Web UI: http://localhost:5000")
     print(f"Logs: {log_file}")

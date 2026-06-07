@@ -8,14 +8,18 @@ set -e
 BASE_URL="https://raw.githubusercontent.com/winsinor/temp/main"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DASHBOARD="$SCRIPT_DIR/dashboard.py"
+UPDATER="$SCRIPT_DIR/updater.py"
+RUN_SCRIPT="$SCRIPT_DIR/run.sh"
 
 echo "=== System Metrics Dashboard Setup ==="
 
-# Download dashboard
-echo "Downloading dashboard..."
+# Download files
+echo "Downloading dashboard files..."
 curl -fsSL "$BASE_URL/dashboard.py" -o "$DASHBOARD"
-chmod +x "$DASHBOARD"
-echo "Downloaded dashboard.py"
+curl -fsSL "$BASE_URL/updater.py" -o "$UPDATER"
+curl -fsSL "$BASE_URL/run.sh" -o "$RUN_SCRIPT"
+chmod +x "$DASHBOARD" "$UPDATER" "$RUN_SCRIPT"
+echo "Downloaded all files"
 
 # Check Python version
 if ! command -v python3 >/dev/null 2>&1; then
@@ -35,8 +39,11 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 echo ""
-echo "=== Starting Dashboard ==="
-echo "Press Ctrl+C to stop"
+echo "=== Setup Complete ==="
 echo ""
-
-python3 "$DASHBOARD"
+echo "To start the dashboard with auto-updates:"
+echo "  $RUN_SCRIPT"
+echo ""
+echo "Or run directly:"
+echo "  python3 $DASHBOARD"
+echo ""

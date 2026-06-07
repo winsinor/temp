@@ -21,6 +21,15 @@ A lightweight ASCII dashboard that displays CPU, GPU, and RAM usage over time wi
 
 ## Quick Start
 
+### Run with Auto-Update (Recommended)
+
+```bash
+curl -sO https://raw.githubusercontent.com/winsinor/temp/main/run.sh && \
+chmod +x run.sh && ./run.sh
+```
+
+Automatically checks for updates from GitHub on every run.
+
 ### Run Directly
 
 ```bash
@@ -59,6 +68,27 @@ RAM Usage       3.4%  │
 ╰─ Collected: 120 samples
 Ctrl+C to exit
 ```
+
+## Auto-Update
+
+The dashboard automatically checks for updates from GitHub and upgrades if a newer version is available.
+
+**With auto-update enabled (recommended):**
+```bash
+./run.sh
+```
+
+**Check for updates manually:**
+```bash
+python3 updater.py --check
+```
+
+**Force update:**
+```bash
+python3 updater.py
+```
+
+For scheduled automatic updates (cron/systemd), see [INSTALL.md](INSTALL.md).
 
 ## Keyboard Shortcuts
 

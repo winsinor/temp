@@ -523,59 +523,46 @@ class RequestHandler(BaseHTTPRequestHandler):
         pass
 
 
-def daemonize(log_file):
-    """Daemonize the process."""
-    try:
-        pid = os.fork()
-        if pid > 0:
-            print(f"Web UI running in background (PID: {pid})")
-            print(f"Web UI: http://localhost:5000")
-            print(f"Logs: {log_file}")
-            sys.exit(0)
-    except OSError as e:
-        sys.stderr.write(f"fork #1 failed: {e.errno} ({e.strerror})\n")
-        sys.exit(1)
-
-    os.chdir("/")
-    os.setsid()
-    os.umask(0)
-
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError as e:
-        sys.stderr.write(f"fork #2 failed: {e.errno} ({e.strerror})\n")
-        sys.exit(1)
-
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-    si = open('/dev/null', 'r')
-    so = open(log_file, 'a')
-    se = open(log_file, 'a')
-
-    os.dup2(si.fileno(), sys.stdin.fileno())
-    os.dup2(so.fileno(), sys.stdout.fileno())
-    os.dup2(se.fileno(), sys.stderr.fileno())
+def spawn_background(log_file):
+    """Spawn the server in the background using subprocess."""
+    import subprocess
+    script_path = os.path.abspath(__file__)
+    with open(log_file, 'a') as log:
+        proc = subprocess.Popen(
+            [sys.executable, script_path, '--worker'],
+            stdout=log,
+            stderr=log,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True
+        )
+    print(f"Web UI running in background (PID: {proc.pid})")
+    print(f"Web UI: http://localhost:5000")
+    print(f"Logs: {log_file}")
+    sys.exit(0)
 
 
 def main():
     foreground = '--foreground' in sys.argv or '-f' in sys.argv
+    is_worker = '--worker' in sys.argv
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     log_file = os.path.join(script_dir, "web.log")
 
-    if not foreground:
-        daemonize(log_file)
+    if not foreground and not is_worker:
+        spawn_background(log_file)
 
     start_collection()
     server = HTTPServer(('0.0.0.0', 5000), RequestHandler)
-    print(f"Web UI running at http://localhost:5000", flush=True)
+    if is_worker:
+        with open(log_file, 'a') as f:
+            f.write(f"Web UI started (PID: {os.getpid()})\n")
+    else:
+        print(f"Web UI running at http://localhost:5000", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nServer stopped.", flush=True)
+        if not is_worker:
+            print("\nServer stopped.", flush=True)
 
 
 def start_collection():

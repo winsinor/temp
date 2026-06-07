@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 ASCII System Metrics Dashboard
-Shows CPU, GPU, and RAM usage over time with sparklines.
+Shows CPU, GPU, and RAM usage over time with Braille sparklines.
+Displays temperatures (not graphed).
 Adapts to terminal width (minimum 40 characters).
 """
 
@@ -11,14 +12,17 @@ import os
 import subprocess
 import shutil
 from collections import deque
+from pathlib import Path
 
 INTERVAL = 1.0  # seconds between updates
 HISTORY_SIZE = 600  # 10 minutes of data at 1-second intervals
 
-BLOCKS = " ▁▂▃▄▅▆▇█"
+# Braille characters for sparklines (16 levels for better resolution)
+BRAILLE = "⠀⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏"
+
 
 class MetricsCollector:
-    """Collects system metrics (CPU, GPU, RAM)."""
+    """Collects system metrics (CPU, GPU, RAM, temperatures)."""
 
     def __init__(self):
         self.prev_idle = 0
@@ -64,50 +68,38 @@ class MetricsCollector:
             return 100.0 * (1.0 - d_idle / d_total)
         return 0.0
 
-    def _get_gpu_usage(self):
-        """Get combined GPU usage from all GPUs."""
-        if not self.has_nvidia or self.gpu_count == 0:
+    def _get_cpu_temp(self):
+        """Get CPU temperature in Celsius."""
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                return float(f.read()) / 1000.0
+        except (FileNotFoundError, ValueError):
             return None
+
+    def _get_gpu_stats(self):
+        """Get individual GPU usage and temperature."""
+        if not self.has_nvidia or self.gpu_count == 0:
+            return [], []
 
         try:
             output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
                 stderr=subprocess.DEVNULL,
                 text=True
             ).strip()
 
-            gpus = [float(x.strip()) for x in output.split('\n')]
-            # Return average GPU usage
-            return sum(gpus) / len(gpus) if gpus else 0.0
-        except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
-            return None
-
-    def _get_gpu_memory(self):
-        """Get combined GPU memory usage from all GPUs."""
-        if not self.has_nvidia or self.gpu_count == 0:
-            return None, None
-
-        try:
-            output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
-                stderr=subprocess.DEVNULL,
-                text=True
-            ).strip()
-
-            lines = output.split('\n')
-            total_used = 0
-            total_mem = 0
-            for line in lines:
+            gpus_usage = []
+            gpus_temp = []
+            for line in output.split('\n'):
                 parts = [x.strip() for x in line.split(',')]
                 if len(parts) >= 2:
-                    total_used += float(parts[0])
-                    total_mem += float(parts[1])
+                    gpus_usage.append(float(parts[0]))
+                    gpus_temp.append(float(parts[1]))
 
-            if total_mem > 0:
-                return 100.0 * total_used / total_mem, total_used
-            return None, None
+            return gpus_usage, gpus_temp
         except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
-            return None, None
+            return [], []
 
     def _get_ram_usage(self):
         """Get system RAM usage percentage."""
@@ -126,28 +118,32 @@ class MetricsCollector:
             return 0.0
 
     def collect(self):
-        """Collect all metrics. Returns dict with cpu, gpu, gpu_mem, ram."""
+        """Collect all metrics."""
+        gpus_usage, gpus_temp = self._get_gpu_stats()
+
         return {
             "cpu": self._get_cpu_usage(),
-            "gpu": self._get_gpu_usage(),
-            "gpu_mem": self._get_gpu_memory()[0],
+            "cpu_temp": self._get_cpu_temp(),
+            "gpu_usage": gpus_usage,
+            "gpu_temp": gpus_temp,
             "ram": self._get_ram_usage(),
         }
 
 
-def sparkline(values, lo, hi, width):
-    """Generate a sparkline from values."""
+def braille_sparkline(values, lo, hi, width):
+    """Generate a Braille sparkline from values."""
     values_to_use = list(values)[-width:] if len(values) > 0 else []
 
     out = []
     for v in values_to_use:
         norm = (v - lo) / (hi - lo) if hi > lo else 0
         norm = max(0.0, min(1.0, norm))
-        out.append(BLOCKS[int(norm * (len(BLOCKS) - 1))])
+        idx = int(norm * (len(BRAILLE) - 1))
+        out.append(BRAILLE[idx])
 
     # Pad with spaces if we don't have enough data
     if len(out) < width:
-        out = [' '] * (width - len(out)) + out
+        out = [BRAILLE[0]] * (width - len(out)) + out
 
     return "".join(out)
 
@@ -173,9 +169,10 @@ def main():
 
     # Data buffers (deques for efficient append/pop)
     cpu_data = deque(maxlen=HISTORY_SIZE)
-    gpu_data = deque(maxlen=HISTORY_SIZE)
-    gpu_mem_data = deque(maxlen=HISTORY_SIZE)
     ram_data = deque(maxlen=HISTORY_SIZE)
+
+    # GPU data buffers - one per GPU
+    gpu_data = [deque(maxlen=HISTORY_SIZE) for _ in range(4)]  # Up to 4 GPUs
 
     # Hide cursor and clear screen
     sys.stdout.write("\033[?25l\033[2J\033[H")
@@ -186,60 +183,57 @@ def main():
             metrics = collector.collect()
 
             cpu_data.append(metrics["cpu"])
-            if metrics["gpu"] is not None:
-                gpu_data.append(metrics["gpu"])
-            if metrics["gpu_mem"] is not None:
-                gpu_mem_data.append(metrics["gpu_mem"])
             ram_data.append(metrics["ram"])
+
+            # Store GPU data by GPU index
+            for i, usage in enumerate(metrics["gpu_usage"]):
+                if i < len(gpu_data):
+                    gpu_data[i].append(usage)
 
             # Get current terminal width for sparklines
             width = get_terminal_width()
             # Reserve space for label, value, unit, and separator
-            # Format: "Label        Value    │sparkline"
-            sparkline_width = max(20, width - 24)
+            sparkline_width = max(20, width - 26)
 
             # Generate sparklines
-            cpu_spark = sparkline(cpu_data, 0, 100, sparkline_width)
-            ram_spark = sparkline(ram_data, 0, 100, sparkline_width)
-            gpu_spark = sparkline(gpu_data, 0, 100, sparkline_width) if gpu_data else ""
-            gpu_mem_spark = sparkline(gpu_mem_data, 0, 100, sparkline_width) if gpu_mem_data else ""
+            cpu_spark = braille_sparkline(cpu_data, 0, 100, sparkline_width)
+            ram_spark = braille_sparkline(ram_data, 0, 100, sparkline_width)
 
             # Build display
             sys.stdout.write("\033[H\033[J")  # Home and clear to end of display
 
             # Header
-            title = "╭─ System Metrics"
-            print(f"{title}")
+            print("╭─ System Metrics Dashboard")
+            print()
 
             # CPU
-            cpu_line = format_metric_line("CPU Usage", metrics["cpu"], cpu_spark)
+            cpu_line = format_metric_line("CPU", metrics["cpu"], cpu_spark)
             print(cpu_line)
-            print(f"{'':12}  ▁=0%   █=100%")
+            if metrics["cpu_temp"] is not None:
+                print(f"  Temp: {metrics['cpu_temp']:.1f}°C")
+            print()
 
             # GPU (if available)
             if collector.has_nvidia and collector.gpu_count > 0:
-                print()
-                gpu_line = format_metric_line("GPU Usage", metrics["gpu"], gpu_spark)
-                print(gpu_line)
-                print(f"{'':12}  ▁=0%   █=100%")
-
-                if metrics["gpu_mem"] is not None:
-                    print()
-                    gpu_mem_line = format_metric_line("GPU RAM", metrics["gpu_mem"], gpu_mem_spark)
-                    print(gpu_mem_line)
-                    print(f"{'':12}  ▁=0%   █=100%")
+                for i, (usage, temp) in enumerate(
+                    zip(metrics["gpu_usage"], metrics["gpu_temp"])
+                ):
+                    if i < len(gpu_data) and gpu_data[i]:
+                        gpu_spark = braille_sparkline(
+                            gpu_data[i], 0, 100, sparkline_width
+                        )
+                        gpu_line = format_metric_line(f"GPU {i}", usage, gpu_spark)
+                        print(gpu_line)
+                        print(f"  Temp: {temp:.1f}°C")
+                        print()
 
             # RAM
-            print()
-            ram_line = format_metric_line("RAM Usage", metrics["ram"], ram_spark)
+            ram_line = format_metric_line("RAM", metrics["ram"], ram_spark)
             print(ram_line)
-            print(f"{'':12}  ▁=0%   █=100%")
+            print()
 
             # Footer
-            print()
-            uptime_str = f"Collected: {len(cpu_data)} samples"
-            print(f"╰─ {uptime_str}")
-            print("Ctrl+C to exit")
+            print(f"╰─ Samples: {len(cpu_data)} │ Ctrl+C to exit")
 
             sys.stdout.flush()
             time.sleep(INTERVAL)

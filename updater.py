@@ -15,7 +15,7 @@ from urllib.request import urlopen
 from urllib.error import URLError
 
 REPO_URL = "https://raw.githubusercontent.com/winsinor/temp/main"
-FILES_TO_UPDATE = ["dashboard.py", "dashboard-hyperpixel.py", "setup.sh"]
+FILES_TO_UPDATE = ["dashboard.py", "dashboard-hyperpixel.py", "setup.sh", "web.py"]
 SCRIPT_DIR = Path(__file__).parent.absolute()
 VERSION_FILE = SCRIPT_DIR / ".version"
 

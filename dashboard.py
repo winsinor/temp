@@ -25,9 +25,7 @@ class MetricsCollector:
     """Collects system metrics (CPU, GPU, RAM, temperatures)."""
 
     def __init__(self):
-        self.prev_idle = 0
-        self.prev_total = 0
-        self._read_cpu_stat()  # Initialize
+        self.prev_idle, self.prev_total = self._read_cpu_stat()
         self.has_nvidia = shutil.which("nvidia-smi") is not None
         self.gpu_count = 0
         if self.has_nvidia:
@@ -51,10 +49,11 @@ class MetricsCollector:
             output = subprocess.check_output(
                 ["nvidia-smi", "--list-gpus"],
                 stderr=subprocess.DEVNULL,
+                timeout=5,
                 text=True
             ).strip()
             self.gpu_count = len(output.split('\n')) if output else 0
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             self.gpu_count = 0
 
     def _get_cpu_usage(self):
@@ -77,29 +76,38 @@ class MetricsCollector:
             return None
 
     def _get_gpu_stats(self):
-        """Get individual GPU usage and temperature."""
+        """Get individual GPU usage, temperature, and VRAM usage."""
         if not self.has_nvidia or self.gpu_count == 0:
-            return [], []
+            return [], [], []
 
         try:
             output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu",
+                ["nvidia-smi",
+                 "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
                  "--format=csv,noheader,nounits"],
                 stderr=subprocess.DEVNULL,
+                timeout=5,
                 text=True
             ).strip()
 
             gpus_usage = []
             gpus_temp = []
+            gpus_mem_pct = []
             for line in output.split('\n'):
                 parts = [x.strip() for x in line.split(',')]
-                if len(parts) >= 2:
+                if len(parts) >= 4:
                     gpus_usage.append(float(parts[0]))
                     gpus_temp.append(float(parts[1]))
+                    mem_used = float(parts[2])
+                    mem_total = float(parts[3])
+                    gpus_mem_pct.append(
+                        100.0 * mem_used / mem_total if mem_total > 0 else 0.0
+                    )
 
-            return gpus_usage, gpus_temp
-        except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
-            return [], []
+            return gpus_usage, gpus_temp, gpus_mem_pct
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                ValueError, FileNotFoundError):
+            return [], [], []
 
     def _get_ram_usage(self):
         """Get system RAM usage percentage."""
@@ -119,13 +127,14 @@ class MetricsCollector:
 
     def collect(self):
         """Collect all metrics."""
-        gpus_usage, gpus_temp = self._get_gpu_stats()
+        gpus_usage, gpus_temp, gpus_mem_pct = self._get_gpu_stats()
 
         return {
             "cpu": self._get_cpu_usage(),
             "cpu_temp": self._get_cpu_temp(),
             "gpu_usage": gpus_usage,
             "gpu_temp": gpus_temp,
+            "gpu_mem_pct": gpus_mem_pct,
             "ram": self._get_ram_usage(),
         }
 
@@ -173,6 +182,7 @@ def main():
 
     # GPU data buffers - one per GPU
     gpu_data = [deque(maxlen=HISTORY_SIZE) for _ in range(4)]  # Up to 4 GPUs
+    gpu_mem_data = [deque(maxlen=HISTORY_SIZE) for _ in range(4)]
 
     # Hide cursor and clear screen
     sys.stdout.write("\033[?25l\033[2J\033[H")
@@ -189,6 +199,9 @@ def main():
             for i, usage in enumerate(metrics["gpu_usage"]):
                 if i < len(gpu_data):
                     gpu_data[i].append(usage)
+            for i, mem_pct in enumerate(metrics["gpu_mem_pct"]):
+                if i < len(gpu_mem_data):
+                    gpu_mem_data[i].append(mem_pct)
 
             # Get current terminal width for sparklines
             width = get_terminal_width()
@@ -224,6 +237,12 @@ def main():
                         )
                         gpu_line = format_metric_line(f"GPU {i}", usage, gpu_spark)
                         print(gpu_line)
+                        if i < len(gpu_mem_data) and gpu_mem_data[i]:
+                            mem_pct = metrics["gpu_mem_pct"][i]
+                            mem_spark = braille_sparkline(
+                                gpu_mem_data[i], 0, 100, sparkline_width
+                            )
+                            print(format_metric_line(f"  VRAM {i}", mem_pct, mem_spark))
                         print(f"  Temp: {temp:.1f}°C")
                         print()
 

@@ -322,6 +322,11 @@ HTML_TEMPLATE = '''
                 <div class="status" id="ramStatus"></div>
             </div>
             <div id="gpuCharts"></div>
+            <div class="chart-container">
+                <div class="chart-title">Disk I/O</div>
+                <canvas id="diskChart"></canvas>
+                <div class="status" id="diskStatus"></div>
+            </div>
         </div>
     </div>
 
@@ -422,7 +427,8 @@ HTML_TEMPLATE = '''
                 if (isRangeChange) {
                     const gpuContainer = document.getElementById('gpuCharts');
                     gpuContainer.innerHTML = '';
-                    Object.keys(charts).forEach(k => { if (k.startsWith('gpu')) charts[k].destroy(); });
+                    Object.keys(charts).forEach(k => { if (k.startsWith('gpu')) { charts[k].destroy(); delete charts[k]; } });
+                    if (charts.disk) { charts.disk.destroy(); delete charts.disk; }
                 }
 
                 if (data.gpu_count > 0) {
@@ -463,6 +469,36 @@ HTML_TEMPLATE = '''
                         document.getElementById(`gpuStatus${i}`).textContent = `Average: ${gpuAvg}%`;
                     }
                 }
+                // Disk I/O chart
+                const diskAvg = arr => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : '0.00';
+                if (!charts.disk || isRangeChange) {
+                    if (charts.disk) charts.disk.destroy();
+                    charts.disk = new Chart(document.getElementById('diskChart'), {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [
+                                { label: 'Read MB/s', data: data.disk_r, borderColor: '#00d2ff', backgroundColor: 'rgba(0,210,255,0.1)', tension: 0.4, fill: true },
+                                { label: 'Write MB/s', data: data.disk_w, borderColor: '#ff5f6d', backgroundColor: 'rgba(255,95,109,0.1)', tension: 0.4, fill: true }
+                            ]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false, animation: false,
+                            plugins: { legend: { display: true, labels: { color: '#b0b0b0' } } },
+                            scales: {
+                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } },
+                                x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
+                            }
+                        }
+                    });
+                } else {
+                    charts.disk.data.labels = labels;
+                    charts.disk.data.datasets[0].data = data.disk_r;
+                    charts.disk.data.datasets[1].data = data.disk_w;
+                    charts.disk.update('none');
+                }
+                document.getElementById('diskStatus').textContent = `R: ${diskAvg(data.disk_r)} MB/s  W: ${diskAvg(data.disk_w)} MB/s`;
+
             } catch (e) {
                 console.error('Error loading data:', e);
             }
@@ -525,7 +561,6 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def spawn_background(log_file):
     """Spawn the server in the background using subprocess."""
-    import subprocess
     script_path = os.path.abspath(__file__)
     with open(log_file, 'a') as log:
         proc = subprocess.Popen(

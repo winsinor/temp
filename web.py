@@ -4,6 +4,8 @@
 import json
 import time
 import threading
+import sys
+import os
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -521,14 +523,57 @@ class RequestHandler(BaseHTTPRequestHandler):
         pass
 
 
+def daemonize(log_file):
+    """Daemonize the process."""
+    try:
+        pid = os.fork()
+        if pid > 0:
+            print(f"Web UI running in background (PID: {pid})")
+            print(f"Web UI: http://localhost:5000")
+            print(f"Logs: {log_file}")
+            sys.exit(0)
+    except OSError as e:
+        sys.stderr.write(f"fork #1 failed: {e.errno} ({e.strerror})\n")
+        sys.exit(1)
+
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
+
+    try:
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)
+    except OSError as e:
+        sys.stderr.write(f"fork #2 failed: {e.errno} ({e.strerror})\n")
+        sys.exit(1)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    with open(log_file, 'a') as log:
+        sys.stdout = log
+        sys.stderr = log
+        os.dup2(log.fileno(), sys.stdout.fileno())
+        os.dup2(log.fileno(), sys.stderr.fileno())
+
+
 def main():
+    foreground = '--foreground' in sys.argv or '-f' in sys.argv
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_file = os.path.join(script_dir, "web.log")
+
+    if not foreground:
+        daemonize(log_file)
+
     start_collection()
     server = HTTPServer(('0.0.0.0', 5000), RequestHandler)
-    print("Web UI running at http://localhost:5000")
+    print(f"Web UI running at http://localhost:5000", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nServer stopped.")
+        print("\nServer stopped.", flush=True)
 
 
 def start_collection():

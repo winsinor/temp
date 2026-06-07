@@ -1,6 +1,7 @@
 #!/bin/bash
 # Web UI runner with auto-update
-# Usage: ./web.sh [web.py options]
+# Usage: ./web.sh [options]
+#   --foreground, -f   Run in foreground (default: background)
 
 set -e
 
@@ -13,5 +14,5 @@ if [ -f "$UPDATER" ]; then
     python3 "$UPDATER" 2>/dev/null || true
 fi
 
-# Run web UI
-exec python3 "$WEB" "$@"
+# Run web UI (background by default)
+python3 "$WEB" "$@"

@@ -27,6 +27,8 @@ class MetricsCollector:
             self._detect_gpu_count()
         self._prev_disk = {}
         self._prev_disk_t = time.monotonic()
+        self.cpu_model = self._get_cpu_model()
+        self.gpu_models = self._get_gpu_models()
 
     def _read_cpu_stat(self):
         try:
@@ -59,6 +61,28 @@ class MetricsCollector:
             self.gpu_count = len(out.split('\n')) if out else 0
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             self.gpu_count = 0
+
+    def _get_cpu_model(self):
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        except (FileNotFoundError, ValueError):
+            pass
+        return "CPU"
+
+    def _get_gpu_models(self):
+        if not self.has_nvidia or self.gpu_count == 0:
+            return []
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                stderr=subprocess.DEVNULL, timeout=5, text=True,
+            ).strip()
+            return out.split('\n') if out else []
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return []
 
     def _get_gpu_stats(self):
         if not self.has_nvidia or self.gpu_count == 0:
@@ -208,13 +232,21 @@ class MetricsStore:
                 "mem": get_slice(self.history["gpu_mem"][i]),
             } for i in range(min(gpu_count, 4))]
 
+            current_cpu_temp = self.history["cpu_temp"][-1] if self.history["cpu_temp"] else 0
+            current_gpu_temps = [self.history["gpu_temp"][i][-1] if self.history["gpu_temp"][i] else 0
+                                 for i in range(min(gpu_count, 4))]
+
             return {
                 "times": relative_times,
                 "cpu": get_slice(self.history["cpu"]),
                 "cpu_temp": get_slice(self.history["cpu_temp"]),
+                "cpu_model": self.collector.cpu_model,
+                "cpu_current_temp": current_cpu_temp,
                 "ram": get_slice(self.history["ram"]),
                 "ram_gb": get_slice(self.history["ram_gb"]),
                 "gpu": gpu_data,
+                "gpu_models": self.collector.gpu_models[:gpu_count],
+                "gpu_current_temps": current_gpu_temps,
                 "disk_r": get_slice(self.history["disk_r"]),
                 "disk_w": get_slice(self.history["disk_w"]),
                 "gpu_count": gpu_count,
@@ -295,6 +327,8 @@ HTML_TEMPLATE = '''
             color: #707070;
             margin-top: 10px;
             font-size: 12px;
+            line-height: 1.6;
+            word-break: break-word;
         }
     </style>
 </head>
@@ -360,6 +394,36 @@ HTML_TEMPLATE = '''
             }
         };
 
+        function getSmartLabels(times, seconds) {
+            if (times.length === 0) return [];
+            const labels = new Array(times.length).fill('');
+
+            let interval = 1;
+            if (seconds <= 30) interval = 5;
+            else if (seconds <= 60) interval = 10;
+            else if (seconds <= 300) interval = 30;
+            else if (seconds <= 1800) interval = 300;
+            else if (seconds <= 3600) interval = 600;
+            else if (seconds <= 14400) interval = 1800;
+            else interval = 7200;
+
+            const lastTime = times[times.length - 1];
+            times.forEach((t, i) => {
+                if (Math.abs(t - Math.round(t / interval) * interval) < 0.5) {
+                    const min = Math.floor(t / 60);
+                    const sec = Math.floor(t % 60);
+                    labels[i] = min > 0 ? `${min}m${sec}s` : `${sec}s`;
+                }
+            });
+            if (labels[labels.length - 1] === '') {
+                const t = lastTime;
+                const min = Math.floor(t / 60);
+                const sec = Math.floor(t % 60);
+                labels[labels.length - 1] = min > 0 ? `${min}m${sec}s` : `${sec}s`;
+            }
+            return labels;
+        }
+
         async function loadData(seconds, isRangeChange = false) {
             currentRange = seconds;
             try {
@@ -367,11 +431,7 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 if (!data || data.error) return;
 
-                const labels = data.times.map((t, i) => {
-                    const min = Math.floor(t / 60);
-                    const sec = Math.floor(t % 60);
-                    return min > 0 ? `${min}m${sec}s` : `${sec}s`;
-                });
+                const labels = getSmartLabels(data.times, seconds);
 
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
@@ -396,7 +456,8 @@ HTML_TEMPLATE = '''
                     charts.cpu.update('none');
                 }
                 const cpuAvg = (data.cpu.reduce((a, b) => a + b, 0) / data.cpu.length).toFixed(1);
-                document.getElementById('cpuStatus').textContent = `Average: ${cpuAvg}%`;
+                const cpuTempStr = data.cpu_current_temp > 0 ? ` • ${data.cpu_current_temp.toFixed(0)}°C` : '';
+                document.getElementById('cpuStatus').textContent = `${data.cpu_model}${cpuTempStr} • Avg: ${cpuAvg}%`;
 
                 // RAM chart
                 if (!charts.ram || isRangeChange) {
@@ -466,7 +527,9 @@ HTML_TEMPLATE = '''
                             charts[`gpu${i}`].update('none');
                         }
                         const gpuAvg = (gpu.usage.reduce((a, b) => a + b, 0) / gpu.usage.length).toFixed(1);
-                        document.getElementById(`gpuStatus${i}`).textContent = `Average: ${gpuAvg}%`;
+                        const gpuModel = data.gpu_models[i] || `GPU ${i}`;
+                        const gpuTempStr = data.gpu_current_temps[i] > 0 ? ` • ${data.gpu_current_temps[i].toFixed(0)}°C` : '';
+                        document.getElementById(`gpuStatus${i}`).textContent = `${gpuModel}${gpuTempStr} • Avg: ${gpuAvg}%`;
                     }
                 }
                 // Disk I/O chart

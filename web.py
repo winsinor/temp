@@ -551,11 +551,13 @@ def daemonize(log_file):
     sys.stdout.flush()
     sys.stderr.flush()
 
-    with open(log_file, 'a') as log:
-        sys.stdout = log
-        sys.stderr = log
-        os.dup2(log.fileno(), sys.stdout.fileno())
-        os.dup2(log.fileno(), sys.stderr.fileno())
+    si = open('/dev/null', 'r')
+    so = open(log_file, 'a')
+    se = open(log_file, 'a')
+
+    os.dup2(si.fileno(), sys.stdin.fileno())
+    os.dup2(so.fileno(), sys.stdout.fileno())
+    os.dup2(se.fileno(), sys.stderr.fileno())
 
 
 def main():

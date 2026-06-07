@@ -2,16 +2,24 @@
 
 ## Project Overview
 
-A lightweight ASCII system metrics dashboard that displays real-time CPU, GPU, and RAM usage with Braille sparkline graphs. Designed for minimal terminal widths (40+ characters) and works on phones via SSH (Terminus) up to large desktop displays.
+Two system metrics dashboards for real-time monitoring:
 
-**Key Features:**
-- Real-time metrics with 1-second updates
-- Braille sparklines (16 levels) for better resolution
+1. **CLI Dashboard** - Lightweight ASCII display with Braille sparkline graphs
+   - Designed for minimal terminal widths (40+ characters)
+   - Works on phones via SSH (Terminus) up to large desktop displays
+
+2. **Web UI** - Modern browser-based interface with interactive charts
+   - Time range selector (30s to 24h)
+   - Real-time Chart.js graphs
+   - Dark theme with responsive layout
+   - Runs in background with auto-update
+
+**Shared Features:**
+- Real-time metrics with 1-second collection
 - Individual GPU tracking (GPU 0, GPU 1, etc.)
 - Temperature display (CPU and GPU)
-- 10-minute rolling history
+- 24-hour rolling history
 - Auto-update from GitHub
-- Adaptive to terminal width
 - No external dependencies (uses stdlib + optional nvidia-smi)
 
 ## Architecture
@@ -40,13 +48,28 @@ A lightweight ASCII system metrics dashboard that displays real-time CPU, GPU, a
 - Downloads all necessary files
 - Verifies Python 3 and optional NVIDIA drivers
 
+**web.py** - Web UI application
+- HTTP server using stdlib `http.server`
+- Real-time metrics API (`/api/metrics`)
+- HTML5 frontend with Chart.js graphs
+- Reuses `MetricsCollector` from dashboard.py
+- Background process with logging to `web.log`
+- Runs on port 5000 by default
+
+**web.sh** - Web UI wrapper script
+- Checks for updates before launching web UI
+- Spawns web.py in background
+- Logs startup info (PID, URL, log file)
+
 ## File Structure
 
 ```
 .
-├── dashboard.py              # Main dashboard application
+├── dashboard.py              # CLI dashboard application
+├── web.py                     # Web UI application
 ├── updater.py                # Auto-update script
-├── run.sh                     # Wrapper with auto-update
+├── run.sh                     # CLI wrapper with auto-update
+├── web.sh                     # Web UI wrapper with auto-update
 ├── setup.sh                   # Installation script
 ├── CLAUDE.md                  # This file
 ├── README.md                  # User-facing documentation
@@ -79,6 +102,33 @@ A lightweight ASCII system metrics dashboard that displays real-time CPU, GPU, a
 - Parses `/proc/meminfo` for MemTotal and MemAvailable
 - Calculates percentage: (Total - Available) / Total * 100
 - Returns 0-100%
+
+### Web UI System
+
+**Architecture:**
+- `MetricsStore` class: Thread-safe collection of metrics
+- Background thread: Runs `MetricsCollector.collect_loop()` every 1 second
+- HTTP handler: Serves static HTML and JSON API
+- API endpoint: `/api/metrics?seconds=<range>` returns data slice
+
+**History Management:**
+- Extended to 24-hour history (86,400 samples at 1-second intervals)
+- Deques with `maxlen` for automatic FIFO overflow
+- Memory efficient: ~2MB per metric type
+
+**Frontend Features:**
+- Time range selector: 30s, 1m, 5m, 30m, 1h, 4h, 24h
+- Chart.js line graphs with smooth animations
+- Real-time updates every 2 seconds
+- Dark theme matching Claude design
+- Responsive grid layout for multiple GPUs
+- Average calculations per time range
+
+**Background Process:**
+- `spawn_background()`: Uses `subprocess.Popen` with `start_new_session`
+- Detaches from terminal completely
+- Redirects stdout/stderr to `web.log`
+- Shows PID and URL on startup
 
 ### Display System
 
@@ -116,10 +166,15 @@ A lightweight ASCII system metrics dashboard that displays real-time CPU, GPU, a
 ### Data Buffers
 
 ```python
-cpu_data = deque(maxlen=HISTORY_SIZE)  # maxlen=600
+cpu_data = deque(maxlen=HISTORY_SIZE)  # maxlen=86400 (24 hours)
 ```
 
 Deques are used for O(1) append/pop with automatic old-data removal. No manual cleanup needed.
+
+**History Sizes:**
+- CLI Dashboard: 600 samples (10 minutes at 1-second intervals)
+- Web UI: 86,400 samples (24 hours at 1-second intervals)
+- Memory per metric: ~2-3 MB (24-hour history)
 
 ### Non-Blocking GPU Detection
 
@@ -156,16 +211,29 @@ Smooth, flicker-free updates without external library.
 
 ### Testing
 
-**Test on narrow terminal:**
+**CLI Dashboard - Test on narrow terminal:**
 ```bash
 export COLUMNS=40
 python3 dashboard.py
 ```
 
-**Test with CPU load:**
+**CLI Dashboard - Test with CPU load:**
 ```bash
 python3 -c "import time; [i**2 for i in range(1000000) for _ in range(100)]" &
 python3 dashboard.py
+```
+
+**Web UI - Test in foreground:**
+```bash
+python3 web.py --foreground
+# Open browser to http://localhost:5000
+```
+
+**Web UI - Test background mode:**
+```bash
+./web.sh
+tail -f web.log
+pkill -f "python3 web.py"
 ```
 
 **Test GPU detection:**
@@ -211,17 +279,29 @@ Check file hashes during update:
 python3 updater.py  # Shows download/update messages on stderr
 ```
 
+## Completed Features
+
+- [x] Web UI with modern charts (Chart.js)
+- [x] Time range selector (30s to 24h)
+- [x] 24-hour history support
+- [x] Background process for web UI
+- [x] Dark theme UI
+- [x] GPU support in both dashboards
+- [x] Temperature monitoring
+
 ## Future Enhancements
 
 - [ ] HyperPixel 4 display support (480x800 @ 60Hz)
 - [ ] Network I/O monitoring (bytes in/out)
 - [ ] Disk I/O monitoring (read/write throughput)
 - [ ] Process monitoring (top N processes)
-- [ ] Persistent history logging to file
-- [ ] Custom color themes
+- [ ] Persistent history logging to SQLite
+- [ ] Custom color themes for web UI
 - [ ] Alert thresholds (highlight high usage)
 - [ ] Multi-user support (per-user data)
 - [ ] Configuration file (settings, update frequency, etc.)
+- [ ] Export metrics to CSV/JSON
+- [ ] Grafana integration
 
 ## Common Issues
 
@@ -255,12 +335,27 @@ Normal with 1-second updates. Can increase `INTERVAL` in code if needed.
 
 ## Deployment
 
-**Single machine:**
+**Setup (downloads all files):**
 ```bash
-curl -sO https://raw.githubusercontent.com/winsinor/temp/main/run.sh
-chmod +x run.sh
+curl -sL https://raw.githubusercontent.com/winsinor/temp/main/setup.sh | bash
+```
+
+**CLI Dashboard:**
+```bash
 ./run.sh
 ```
+
+**Web UI (runs in background):**
+```bash
+./web.sh
+# View logs: tail -f web.log
+# Run in foreground: ./web.sh --foreground
+```
+
+**Web UI from browser:**
+- Open http://localhost:5000
+- Select time range: 30s to 24h
+- View CPU, RAM, GPU metrics with averages
 
 **Scheduled updates (cron):**
 ```bash

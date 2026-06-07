@@ -356,7 +356,7 @@ HTML_TEMPLATE = '''
                 <canvas id="ramChart"></canvas>
                 <div class="status" id="ramStatus"></div>
             </div>
-            <div id="gpuCharts"></div>
+            <div id="gpuCharts" style="display:contents"></div>
             <div class="chart-container">
                 <div class="chart-title">Disk I/O</div>
                 <canvas id="diskChart"></canvas>
@@ -395,31 +395,54 @@ HTML_TEMPLATE = '''
             }
         };
 
+        // Bucket `arr` into `n` fixed time-based bins spanning [0, totalDuration].
+        // Uses rawTimes for placement so bucket boundaries never shift as new data arrives.
+        function condenseByTime(rawTimes, arr, n, totalDuration) {
+            const bucketSize = totalDuration / n;
+            const sums   = new Array(n).fill(0);
+            const counts = new Array(n).fill(0);
+            for (let i = 0; i < arr.length; i++) {
+                const v = arr[i];
+                if (v === null || v === undefined) continue;
+                const b = Math.min(Math.floor(rawTimes[i] / bucketSize), n - 1);
+                sums[b] += v;
+                counts[b]++;
+            }
+            return sums.map((s, i) => counts[i] > 0 ? s / counts[i] : null);
+        }
+
+        function avg(arr) {
+            const vals = arr.filter(v => v !== null && v !== undefined && !isNaN(v));
+            return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        }
+
         function getSmartLabels(times, seconds) {
             if (times.length === 0) return [];
-            const labels = new Array(times.length).fill('');
             const n = times.length;
-            const duration = times[n - 1];
+            const labels = new Array(n).fill('');
+            const bucketSize = seconds / n;
 
-            // Snap raw interval up to the nearest clean value to get 4–8 ticks
-            const rawInterval = duration / 6;
+            // Snap to a clean interval to get 4–8 ticks
             const niceIntervals = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200];
-            const interval = niceIntervals.find(c => c >= rawInterval) ?? niceIntervals[niceIntervals.length - 1];
+            const rawInterval = seconds / 6;
+            const found = niceIntervals.find(c => c >= rawInterval);
+            const interval = found || niceIntervals[niceIntervals.length - 1];
 
             function fmt(t) {
                 t = Math.round(t);
-                if (t < 60) return `${t}s`;
+                if (t < 60) return t + 's';
                 const min = Math.floor(t / 60);
                 const sec = t % 60;
-                if (t < 3600) return sec === 0 ? `${min}m` : `${min}m${sec}s`;
+                if (t < 3600) return sec === 0 ? min + 'm' : min + 'm' + sec + 's';
                 const hr = Math.floor(t / 3600);
                 const rem = min % 60;
-                return rem === 0 ? `${hr}h` : `${hr}h${rem}m`;
+                return rem === 0 ? hr + 'h' : hr + 'h' + rem + 'm';
             }
 
-            for (let tick = 0; tick <= duration; tick += interval) {
-                const idx = times.findIndex(t => t >= tick);
-                if (idx !== -1) labels[idx] = fmt(tick);
+            for (let tick = 0; tick <= seconds; tick += interval) {
+                // Direct O(1) bucket lookup: times[i] = (i+0.5)*bucketSize
+                const idx = Math.max(0, Math.min(n - 1, Math.round(tick / bucketSize - 0.5)));
+                labels[idx] = fmt(tick);
             }
             return labels;
         }
@@ -431,17 +454,20 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 if (!data || data.error) return;
 
-                // If data is shorter than the requested range, anchor the axis
-                // at `seconds` with a null sentinel — no stretching, just empty space
-                if (data.times.length > 0 && data.times[data.times.length - 1] < seconds * 0.9) {
-                    data.times.push(seconds);
-                    data.cpu.push(null);
-                    data.cpu_temp.push(null);
-                    data.ram.push(null);
-                    data.disk_r.push(null);
-                    data.disk_w.push(null);
-                    for (let i = 0; i < data.gpu_count; i++) data.gpu[i].usage.push(null);
-                }
+                // Fixed bucket count for the selected range — never depends on how many
+                // samples arrived, so bucket boundaries are stable between refreshes.
+                // Short ranges get 1 bucket/sec; longer ranges cap at 200 buckets.
+                // Empty buckets at the end → null → blank space, no stretching.
+                const rawTimes = data.times;
+                const n = Math.min(200, seconds);
+                const bucketSize = seconds / n;
+                data.times  = Array.from({length: n}, (_, i) => (i + 0.5) * bucketSize);
+                data.cpu    = condenseByTime(rawTimes, data.cpu,    n, seconds);
+                data.ram    = condenseByTime(rawTimes, data.ram,    n, seconds);
+                data.disk_r = condenseByTime(rawTimes, data.disk_r, n, seconds);
+                data.disk_w = condenseByTime(rawTimes, data.disk_w, n, seconds);
+                for (let i = 0; i < data.gpu_count; i++)
+                    data.gpu[i].usage = condenseByTime(rawTimes, data.gpu[i].usage, n, seconds);
 
                 const labels = getSmartLabels(data.times, seconds);
 
@@ -469,7 +495,7 @@ HTML_TEMPLATE = '''
                     charts.cpu.data.datasets[0].data = data.cpu;
                     charts.cpu.update('none');
                 }
-                const cpuAvg = (data.cpu.reduce((a, b) => a + b, 0) / data.cpu.length).toFixed(1);
+                const cpuAvg = avg(data.cpu).toFixed(1);
                 const cpuTempStr = data.cpu_current_temp > 0 ? ` • ${data.cpu_current_temp.toFixed(0)}°C` : '';
                 document.getElementById('cpuStatus').textContent = `${data.cpu_model}${cpuTempStr} • Avg: ${cpuAvg}%`;
 
@@ -497,7 +523,7 @@ HTML_TEMPLATE = '''
                     charts.ram.data.datasets[0].data = data.ram;
                     charts.ram.update('none');
                 }
-                const ramAvg = (data.ram.reduce((a, b) => a + b, 0) / data.ram.length).toFixed(1);
+                const ramAvg = avg(data.ram).toFixed(1);
                 document.getElementById('ramStatus').textContent = `Average: ${ramAvg}%`;
 
                 // GPU charts
@@ -544,14 +570,14 @@ HTML_TEMPLATE = '''
                             charts[`gpu${i}`].data.datasets[0].data = gpu.usage;
                             charts[`gpu${i}`].update('none');
                         }
-                        const gpuAvg = (gpu.usage.reduce((a, b) => a + b, 0) / gpu.usage.length).toFixed(1);
+                        const gpuAvg = avg(gpu.usage).toFixed(1);
                         const gpuModel = data.gpu_models[i] || `GPU ${i}`;
                         const gpuTempStr = data.gpu_current_temps[i] > 0 ? ` • ${data.gpu_current_temps[i].toFixed(0)}°C` : '';
                         document.getElementById(`gpuStatus${i}`).textContent = `${gpuModel}${gpuTempStr} • Avg: ${gpuAvg}%`;
                     }
                 }
                 // Disk I/O chart
-                const diskAvg = arr => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : '0.00';
+                const diskAvg = arr => avg(arr).toFixed(2);
                 if (!charts.disk || isRangeChange) {
                     if (charts.disk) charts.disk.destroy();
                     charts.disk = new Chart(document.getElementById('diskChart'), {

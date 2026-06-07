@@ -436,8 +436,10 @@ HTML_TEMPLATE = '''
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
                     if (charts.cpu) charts.cpu.destroy();
+                    const cpuConfig = JSON.parse(JSON.stringify(chartConfig));
+                    cpuConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.cpu = new Chart(document.getElementById('cpuChart'), {
-                        ...chartConfig,
+                        ...cpuConfig,
                         data: {
                             labels,
                             datasets: [{
@@ -462,8 +464,10 @@ HTML_TEMPLATE = '''
                 // RAM chart
                 if (!charts.ram || isRangeChange) {
                     if (charts.ram) charts.ram.destroy();
+                    const ramConfig = JSON.parse(JSON.stringify(chartConfig));
+                    ramConfig.options.scales.y.ticks.callback = v => v + '%';
                     charts.ram = new Chart(document.getElementById('ramChart'), {
-                        ...chartConfig,
+                        ...ramConfig,
                         data: {
                             labels,
                             datasets: [{
@@ -507,8 +511,10 @@ HTML_TEMPLATE = '''
                             gpuContainer.appendChild(container);
                         }
                         if (!charts[`gpu${i}`]) {
+                            const gpuConfig = JSON.parse(JSON.stringify(chartConfig));
+                            gpuConfig.options.scales.y.ticks.callback = v => v + '%';
                             charts[`gpu${i}`] = new Chart(document.getElementById(`gpuChart${i}`), {
-                                ...chartConfig,
+                                ...gpuConfig,
                                 data: {
                                     labels,
                                     datasets: [{
@@ -549,7 +555,7 @@ HTML_TEMPLATE = '''
                             responsive: true, maintainAspectRatio: false, animation: false,
                             plugins: { legend: { display: true, labels: { color: '#b0b0b0' } } },
                             scales: {
-                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } },
+                                y: { beginAtZero: true, grid: { color: '#2a2a2a' }, ticks: { color: '#707070', callback: v => v + ' MB/s' } },
                                 x: { grid: { color: '#2a2a2a' }, ticks: { color: '#707070' } }
                             }
                         }

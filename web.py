@@ -223,8 +223,9 @@ class MetricsStore:
                     return list(deq)[-num_samples:]
                 return list(deq)
 
+            # Absolute timestamps: the client buckets by absolute time so a sample's
+            # bucket never changes as new data arrives (stable, flicker-free redraws).
             timestamps = get_slice(self.history["timestamps"])
-            relative_times = [(t - timestamps[0]) for t in timestamps] if timestamps else []
 
             gpu_count = self.collector.gpu_count
             gpu_data = [{
@@ -238,7 +239,7 @@ class MetricsStore:
                                  for i in range(min(gpu_count, 4))]
 
             return {
-                "times": relative_times,
+                "times": timestamps,
                 "cpu": get_slice(self.history["cpu"]),
                 "cpu_temp": get_slice(self.history["cpu_temp"]),
                 "cpu_model": self.collector.cpu_model,
@@ -388,31 +389,35 @@ HTML_TEMPLATE = '''
             return NICE_INTERVALS.find(c => c >= raw) || NICE_INTERVALS[NICE_INTERVALS.length - 1];
         }
 
-        // Bucket samples into `n` fixed time bins, anchored to the RIGHT edge so the
-        // newest sample sits at x≈totalDuration. Empty interior buckets are simply
-        // omitted (the line connects across them, so no spurious gaps), and when there
-        // isn't enough history the missing buckets fall on the LEFT, leaving it blank.
-        // Returns an array of {x, y} points ordered left→right.
-        function bucketPoints(rawTimes, arr, n, totalDuration) {
-            if (!rawTimes.length) return [];
-            const bucketSize = totalDuration / n;
-            const latest = rawTimes[rawTimes.length - 1];
-            const sums = new Array(n).fill(0);
-            const counts = new Array(n).fill(0);
+        // Bucket samples by ABSOLUTE time: bucket = floor(t / bucketSize). A sample's
+        // bucket index therefore never changes as new data arrives, so existing buckets
+        // keep their value — only the last bucket or two are affected each refresh, and
+        // the chart scrolls smoothly instead of re-shuffling every second.
+        //
+        // The visible window is [windowStart, windowStart+totalDuration] where
+        // windowStart = now - totalDuration. Points are positioned x = center - windowStart,
+        // i.e. 0 at the left (oldest) edge and totalDuration at the right (newest) edge.
+        // Empty interior buckets are omitted (the line connects across them → no gaps),
+        // and when there isn't enough history the missing buckets fall on the LEFT,
+        // leaving it blank. Returns {x, y} points ordered left→right.
+        function bucketPoints(absTimes, arr, bucketSize, windowStart, totalDuration) {
+            const sums = {}, counts = {};
             for (let i = 0; i < arr.length; i++) {
                 const v = arr[i];
                 if (v === null || v === undefined || isNaN(v)) continue;
-                const xFromLeft = totalDuration - (latest - rawTimes[i]);
-                let b = Math.floor(xFromLeft / bucketSize);
-                if (b < 0) continue;            // older than the window
-                if (b > n - 1) b = n - 1;       // newest sample → last bucket
-                sums[b] += v;
-                counts[b]++;
+                const t = absTimes[i];
+                if (t < windowStart) continue;          // aged out of the window
+                const b = Math.floor(t / bucketSize);   // absolute, stable bucket index
+                sums[b] = (sums[b] || 0) + v;
+                counts[b] = (counts[b] || 0) + 1;
             }
             const pts = [];
-            for (let b = 0; b < n; b++) {
-                if (counts[b] > 0) pts.push({ x: (b + 0.5) * bucketSize, y: sums[b] / counts[b] });
+            for (const b in counts) {
+                const center = (Number(b) + 0.5) * bucketSize;
+                const x = Math.max(0, Math.min(totalDuration, center - windowStart));
+                pts.push({ x, y: sums[b] / counts[b] });
             }
+            pts.sort((a, c) => a.x - c.x);
             return pts;
         }
 
@@ -465,16 +470,21 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 if (!data || data.error) return;
 
-                // Fixed bucket count for the selected range — independent of how many
-                // samples have arrived, so bucket boundaries stay stable between refreshes.
-                const rawTimes = data.times;
+                // Fixed bucket size for the selected range — independent of how many
+                // samples have arrived. Buckets are keyed by absolute time, so boundaries
+                // stay put between refreshes. The window ends at the newest sample (now)
+                // and spans `seconds` back; insufficient history → blank on the left.
+                const absTimes = data.times;
                 const n = Math.min(200, seconds);
+                const bucketSize = seconds / n;
+                const now = absTimes.length ? absTimes[absTimes.length - 1] : 0;
+                const windowStart = now - seconds;
                 const interval = tickInterval(seconds, 9);
 
-                const cpuPts  = bucketPoints(rawTimes, data.cpu,    n, seconds);
-                const ramPts  = bucketPoints(rawTimes, data.ram,    n, seconds);
-                const diskRPts = bucketPoints(rawTimes, data.disk_r, n, seconds);
-                const diskWPts = bucketPoints(rawTimes, data.disk_w, n, seconds);
+                const cpuPts   = bucketPoints(absTimes, data.cpu,    bucketSize, windowStart, seconds);
+                const ramPts   = bucketPoints(absTimes, data.ram,    bucketSize, windowStart, seconds);
+                const diskRPts = bucketPoints(absTimes, data.disk_r, bucketSize, windowStart, seconds);
+                const diskWPts = bucketPoints(absTimes, data.disk_w, bucketSize, windowStart, seconds);
 
                 // CPU chart
                 if (!charts.cpu || isRangeChange) {
@@ -518,7 +528,7 @@ HTML_TEMPLATE = '''
                 if (data.gpu_count > 0) {
                     const gpuContainer = document.getElementById('gpuCharts');
                     for (let i = 0; i < data.gpu_count; i++) {
-                        const gpuPts = bucketPoints(rawTimes, data.gpu[i].usage, n, seconds);
+                        const gpuPts = bucketPoints(absTimes, data.gpu[i].usage, bucketSize, windowStart, seconds);
                         if (!document.getElementById(`gpuChart${i}`)) {
                             const container = document.createElement('div');
                             container.className = 'chart-container';

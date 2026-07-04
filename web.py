@@ -3,6 +3,7 @@
 
 import json
 import gzip
+import io
 import time
 import threading
 import sys
@@ -646,10 +647,16 @@ class MetricsStore:
                 "latest": self._latest,
             }
         try:
-            tmp = self._history_file + ".tmp"
-            with gzip.open(tmp, "wt", encoding="utf-8") as f:
-                json.dump(snapshot, f)
-            os.replace(tmp, self._history_file)
+            # Build the full gzip payload in memory before touching the
+            # target file. self._history_file is bind-mounted as a single
+            # file in the web-metrics container, so it's a mount point -
+            # os.replace()'ing a tmp file onto it fails with EBUSY. Writing
+            # the finished bytes in place avoids ever renaming onto it.
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+                gz.write(json.dumps(snapshot).encode("utf-8"))
+            with open(self._history_file, "wb") as f:
+                f.write(buf.getvalue())
         except OSError as e:
             print(f"Could not persist history: {e}")
 
